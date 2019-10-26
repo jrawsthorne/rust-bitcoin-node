@@ -6,6 +6,7 @@ use {
             PING_INTERVAL, USER_AGENT,
         },
         helper::now,
+        pool::PoolSender,
     },
     bitcoin::{
         consensus::encode,
@@ -27,8 +28,11 @@ use {
         task::Context,
         time::Duration,
     },
-    tokio::{codec::Framed, net::TcpStream, prelude::*, timer::Interval},
+    tokio::{codec::Framed, net::TcpStream, prelude::*, sync::mpsc, timer::Interval},
 };
+
+pub type Receiver = mpsc::UnboundedReceiver<NetworkMessage>;
+pub type Sender = mpsc::UnboundedSender<NetworkMessage>;
 
 pub struct Peer {
     socket: Framed<TcpStream, BitcoinCodec>,
@@ -39,44 +43,72 @@ pub struct Peer {
     last_ping: Option<u64>,
     last_pong: Option<u64>,
     min_ping: Option<u64>, // Lowest ping time seen.
+    receiver: Receiver,
+    pool: Option<PoolSender>,
 }
 
 pub struct PeerOptions {
-    pub network: Network, // e.g. main, testnet or regtest
+    network: Network, // e.g. main, testnet or regtest
+    pool: Option<PoolSender>,
+}
+
+impl PeerOptions {
+    pub fn pool(mut self, pool: PoolSender) -> PeerOptions {
+        self.pool = Some(pool);
+        self
+    }
+
+    pub fn network(mut self, network: Network) -> PeerOptions {
+        self.network = network;
+        self
+    }
 }
 
 impl Default for PeerOptions {
     fn default() -> PeerOptions {
         PeerOptions {
             network: Network::Bitcoin,
+            pool: None,
         }
     }
 }
 
 impl Peer {
-    pub async fn connect(addr: &SocketAddr, options: PeerOptions) -> Result<Peer, failure::Error> {
+    pub async fn connect(
+        addr: &SocketAddr,
+        options: PeerOptions,
+    ) -> Result<(Peer, Sender), failure::Error> {
         // connect to given address, bail if takes more than 10 seconds
         debug!("connecting to {}", addr);
         let stream = TcpStream::connect(addr)
-            .timeout(Duration::from_secs(CONNECT_TIMEOUT))
+            .timeout(Duration::from_millis(CONNECT_TIMEOUT))
             .await??;
         debug!("connected to peer {}", addr);
         Peer::from_stream(stream, options)
     }
 
-    pub fn from_stream(socket: TcpStream, options: PeerOptions) -> Result<Peer, failure::Error> {
+    pub fn from_stream(
+        socket: TcpStream,
+        options: PeerOptions,
+    ) -> Result<(Peer, Sender), failure::Error> {
         let socket = Framed::new(socket, BitcoinCodec::new(options.network));
         let addr = socket.get_ref().peer_addr()?;
-        Ok(Peer {
-            socket,
-            addr,
-            version: None,
-            ping_timer: Interval::new_interval(Duration::from_secs(PING_INTERVAL)),
-            nonce: None,
-            last_ping: None,
-            min_ping: None,
-            last_pong: None,
-        })
+        let (sender, receiver) = mpsc::unbounded_channel();
+        Ok((
+            Peer {
+                socket,
+                addr,
+                version: None,
+                ping_timer: Interval::new_interval(Duration::from_millis(PING_INTERVAL)),
+                nonce: None,
+                last_ping: None,
+                min_ping: None,
+                last_pong: None,
+                receiver,
+                pool: options.pool,
+            },
+            sender,
+        ))
     }
 
     async fn send(&mut self, message: NetworkMessage) -> Result<(), Error> {
@@ -88,6 +120,7 @@ impl Peer {
             NetworkMessage::SendHeaders => debug!("sent sendheaders to {}", self.addr),
             NetworkMessage::Ping(_) => debug!("sent ping to {}", self.addr),
             NetworkMessage::Pong(_) => debug!("sent pong to {}", self.addr),
+            NetworkMessage::GetAddr => debug!("sent getaddr to {}", self.addr),
             _ => (),
         }
         self.socket.send(message).await?;
@@ -107,7 +140,7 @@ impl Peer {
             nonce: random(),
             user_agent: USER_AGENT.to_string(),
             start_height: 0,
-            relay: true,
+            relay: false,
         }))
         .await?;
         Ok(())
@@ -121,7 +154,7 @@ impl Peer {
         for _ in 0..2 {
             let message = self
                 .next()
-                .timeout(Duration::from_secs(HANDSHAKE_TIMEOUT))
+                .timeout(Duration::from_millis(HANDSHAKE_TIMEOUT))
                 .await?;
             if let Some(Ok(Message::Packet(message))) = message {
                 match message {
@@ -234,37 +267,59 @@ impl Peer {
         Ok(())
     }
 
+    async fn send_getaddr(&mut self) -> Result<(), Error> {
+        self.send(NetworkMessage::GetAddr).await?;
+        Ok(())
+    }
+
     pub async fn start(&mut self) -> Result<(), failure::Error> {
         self.send_version().await?;
         self.handshake().await?;
+        self.send_getaddr().await?;
         while let Some(result) = self.next().await {
             match result {
                 // peer sent us a message to process
-                Ok(Message::Packet(message)) => match message {
-                    NetworkMessage::Version(_) => debug!("received version from {}", self.addr),
-                    NetworkMessage::Verack => debug!("received verack from {}", self.addr),
-                    NetworkMessage::Addr(_) => debug!("received addr from {}", self.addr),
-                    NetworkMessage::Inv(_) => debug!("received inv from {}", self.addr),
-                    NetworkMessage::Tx(_) => debug!("received tx from {}", self.addr),
-                    NetworkMessage::Block(_) => debug!("received block from {}", self.addr),
-                    NetworkMessage::Headers(_) => debug!("received headers from {}", self.addr),
-                    NetworkMessage::SendHeaders => {
-                        debug!("received sendheaders from {}", self.addr)
+                Ok(Message::Packet(message)) => {
+                    match message {
+                        NetworkMessage::Version(_) => debug!("received version {}", self.addr),
+                        NetworkMessage::Verack => debug!("received verack {}", self.addr),
+                        NetworkMessage::Addr(_) => debug!("received addr {}", self.addr),
+                        NetworkMessage::Inv(_) => debug!("received inv {}", self.addr),
+                        NetworkMessage::Tx(_) => debug!("received tx {}", self.addr),
+                        NetworkMessage::Block(_) => debug!("received block {}", self.addr),
+                        NetworkMessage::Headers(_) => debug!("received headers {}", self.addr),
+                        NetworkMessage::SendHeaders => debug!("received sendheaders {}", self.addr),
+                        NetworkMessage::Ping(_) => debug!("received ping {}", self.addr),
+                        NetworkMessage::Pong(_) => debug!("received pong {}", self.addr),
+                        NetworkMessage::GetHeaders(_) => {
+                            debug!("received getheaders {}", self.addr)
+                        }
+                        _ => (),
                     }
-                    NetworkMessage::Ping(_) => {
-                        debug!("received ping from {}", self.addr);
-                        self.handle_ping(message).await?
+                    match message {
+                        NetworkMessage::SendHeaders => {
+                            debug!("received sendheaders from {}", self.addr);
+                        }
+                        NetworkMessage::Ping(_) => {
+                            debug!("received ping from {}", self.addr);
+                            self.handle_ping(message).await?
+                        }
+                        NetworkMessage::Pong(_) => {
+                            debug!("received pong from {}", self.addr);
+                            self.handle_pong(message);
+                        }
+                        _ => {
+                            if let Some(pool) = self.pool.as_mut() {
+                                pool.send((message, self.addr)).await?;
+                            }
+                        }
                     }
-                    NetworkMessage::Pong(_) => {
-                        debug!("received pong from {}", self.addr);
-                        self.handle_pong(message);
-                    }
-                    _ => (),
-                },
+                }
                 // a timer is ready
                 Ok(Message::Heartbeat) => self.handle_heartbeat().await?,
+                Ok(Message::Broadcast(message)) => self.send(message).await?,
                 Err(e) => {
-                    println!(
+                    debug!(
                         "an error occured while processing messages for {}; error = {}",
                         self.addr, e
                     );
@@ -279,6 +334,7 @@ impl Peer {
 pub enum Message {
     Packet(NetworkMessage),
     Heartbeat,
+    Broadcast(NetworkMessage),
 }
 
 impl Stream for Peer {
@@ -287,6 +343,10 @@ impl Stream for Peer {
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         if let Poll::Ready(_) = self.ping_timer.poll_next_unpin(cx) {
             return Poll::Ready(Some(Ok(Message::Heartbeat)));
+        }
+
+        if let Poll::Ready(Some(v)) = self.receiver.poll_next_unpin(cx) {
+            return Poll::Ready(Some(Ok(Message::Broadcast(v))));
         }
 
         let result: Option<_> = futures::ready!(self.socket.poll_next_unpin(cx));
