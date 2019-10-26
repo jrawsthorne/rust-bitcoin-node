@@ -1,0 +1,15 @@
+[package]
+name = "rust-bitcoin-node"
+version = "0.1.0"
+authors = ["Jake Rawsthorne <jake@jakerawsthorne.co.uk>"]
+edition = "2018"
+
+[dependencies]
+tokio = { version = "=0.2.0-alpha.6" }
+rand = "0.7.2"
+bitcoin = { features=["bitcoinconsensus"] }
+log = "0.4.8"
+env_logger = "0.7.1"
+bytes = "0.4.12"
+futures-preview = "=0.3.0-alpha.19"
+failure = "0.1.6"
