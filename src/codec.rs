@@ -7,10 +7,8 @@ use {
         },
     },
     bytes::{BufMut, BytesMut},
-    tokio::{
-        codec::{Decoder, Encoder},
-        io,
-    },
+    tokio::io,
+    tokio_util::codec::{Decoder, Encoder},
 };
 
 pub struct BitcoinCodec {
@@ -24,7 +22,7 @@ impl BitcoinCodec {
 }
 
 impl Decoder for BitcoinCodec {
-    type Item = NetworkMessage;
+    type Item = RawNetworkMessage;
     type Error = encode::Error;
 
     fn decode(&mut self, buf: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
@@ -41,7 +39,7 @@ impl Decoder for BitcoinCodec {
                 match network {
                     Some(network) if network == expected_network => {
                         buf.split_to(index);
-                        Ok(Some(message.payload))
+                        Ok(Some(message))
                     }
                     Some(network) => Err(encode::Error::UnexpectedNetworkMagic {
                         expected: expected_network.magic(),
@@ -55,14 +53,11 @@ impl Decoder for BitcoinCodec {
 }
 
 impl Encoder for BitcoinCodec {
-    type Item = NetworkMessage;
+    type Item = RawNetworkMessage;
     type Error = encode::Error;
 
     fn encode(&mut self, message: Self::Item, buf: &mut BytesMut) -> Result<(), Self::Error> {
-        let serialized = encode::serialize(&RawNetworkMessage {
-            magic: Network::Bitcoin.magic(),
-            payload: message,
-        });
+        let serialized = encode::serialize(&message);
 
         match serialized.len() {
             len if buf.remaining_mut() < len => {
