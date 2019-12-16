@@ -25,4 +25,5 @@ pub trait P2PListener {
     fn handle_open(&self) {}
 }
 
+/// A collection of connected peers
 pub struct P2P {}

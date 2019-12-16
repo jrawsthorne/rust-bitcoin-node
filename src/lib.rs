@@ -11,4 +11,5 @@ pub mod net;
 
 pub use blockchain::{ChainEntry, ChainListener};
 pub use coins::{CoinEntry, CoinView, Coins};
-pub use net::{P2PListener, Peer, PeerId, PeerListener, P2P};
+pub use mempool::MempoolListener;
+pub use net::{ConnectionListener, P2PListener, Peer, PeerId, PeerListener, P2P};
