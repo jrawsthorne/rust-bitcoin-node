@@ -7,20 +7,15 @@ pub type PeerId = usize;
 
 /// Trait that handles peer events
 pub trait PeerListener {
-    fn handle_open(&self, peer: &Peer) {}
-    fn handle_close(&self, peer: &Peer, connected: bool) {}
-    fn handle_packet(&self, peer: &Peer, packet: &NetworkMessage) {}
-    fn handle_error(&self, peer: &Peer, error: &Error) {}
-    fn handle_ban(&self, peer: &Peer) {}
-    fn handle_connect(&self, peer: &Peer) {}
+    fn handle_open(&self, _peer: &Peer) {}
+    fn handle_close(&self, _peer: &Peer, _connected: bool) {}
+    fn handle_packet(&self, _peer: &Peer, _packet: &NetworkMessage) {}
+    fn handle_error(&self, _peer: &Peer, _error: &Error) {}
+    fn handle_ban(&self, _peer: &Peer) {}
+    fn handle_connect(&self, _peer: &Peer) {}
 }
 
 /// A remote node to send and receive P2P network messages
 pub struct Peer {}
 
-impl ConnectionListener for Peer {
-    fn handle_connect(&self) {}
-    fn handle_close(&self) {}
-    fn handle_packet(&self, packet: NetworkMessage) {}
-    fn handle_error(&self, error: &Error) {}
-}
+impl ConnectionListener for Peer {}

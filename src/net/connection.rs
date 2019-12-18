@@ -5,6 +5,6 @@ use failure::Error;
 pub trait ConnectionListener {
     fn handle_connect(&self) {}
     fn handle_close(&self) {}
-    fn handle_packet(&self, packet: NetworkMessage) {}
-    fn handle_error(&self, error: &Error) {}
+    fn handle_packet(&self, _packet: NetworkMessage) {}
+    fn handle_error(&self, _error: &Error) {}
 }

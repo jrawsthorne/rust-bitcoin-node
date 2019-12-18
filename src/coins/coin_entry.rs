@@ -1,4 +1,4 @@
-use bitcoin::blockdata::transaction::{OutPoint, Transaction, TxOut};
+use bitcoin::blockdata::transaction::{Transaction, TxOut};
 
 /// A single unspent transaction output or coin
 #[derive(Debug, Clone)]
