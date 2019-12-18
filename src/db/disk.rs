@@ -55,13 +55,13 @@ impl DiskDatabase {
 }
 
 impl Database for DiskDatabase {
-    fn insert<V: DBValue>(&mut self, key: Key, value: &V) -> EmptyResult {
+    fn insert<V: DBValue>(&self, key: Key, value: &V) -> EmptyResult {
         let col = self.col(key.col())?;
         self.db.put_cf(col, key.encode()?, value.encode()?)?;
         Ok(())
     }
 
-    fn remove(&mut self, key: Key) -> EmptyResult {
+    fn remove(&self, key: Key) -> EmptyResult {
         let col = self.col(key.col())?;
         self.db.delete_cf(col, key.encode()?)?;
         Ok(())
@@ -76,7 +76,7 @@ impl Database for DiskDatabase {
         })
     }
 
-    fn write_batch(&mut self, batch: Batch) -> EmptyResult {
+    fn write_batch(&self, batch: Batch) -> EmptyResult {
         let mut write_batch = WriteBatch::default();
         for operation in batch.operations {
             match operation {
