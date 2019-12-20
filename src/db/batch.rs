@@ -1,6 +1,7 @@
 use super::{DBValue, Key};
 use crate::util::EmptyResult;
 
+#[derive(Default)]
 pub struct Batch {
     pub operations: Vec<Operation>,
 }
