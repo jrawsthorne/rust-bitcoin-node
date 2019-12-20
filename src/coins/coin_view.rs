@@ -1,6 +1,9 @@
-use super::Coins;
-use bitcoin::{hashes::sha256d::Hash as H256, BitcoinHash, Transaction};
-use std::collections::HashMap;
+use super::{CoinEntry, Coins};
+use crate::blockchain::ChainDB;
+use crate::util::EmptyResult;
+use bitcoin::{hashes::sha256d::Hash as H256, BitcoinHash, OutPoint, Transaction, TxOut};
+use failure::{bail, Error};
+use std::collections::{hash_map::Entry, HashMap};
 
 /// A view of the UTXO set
 #[derive(Debug, Clone, Default)]
@@ -35,5 +38,54 @@ impl CoinView {
         let hash = tx.bitcoin_hash();
         let coins = Coins::from_tx(tx, height);
         self.add(hash, coins)
+    }
+
+    pub fn get_output(&self, prevout: &OutPoint) -> Option<&TxOut> {
+        self.get(prevout.txid)?.get_output(&prevout.vout)
+    }
+
+    /// Get a coin from the coin view or from the database if it exists
+    pub fn read_coin(
+        &mut self,
+        db: &mut ChainDB,
+        prevout: &OutPoint,
+    ) -> Result<Option<&mut CoinEntry>, Error> {
+        Ok(match self.map.entry(prevout.txid) {
+            Entry::Occupied(entry) => match entry.into_mut().outputs.entry(prevout.vout) {
+                Entry::Occupied(entry) => Some(entry.into_mut()),
+                Entry::Vacant(entry) => match db.read_coin(prevout)? {
+                    Some(coin) => Some(entry.insert(coin.clone())),
+                    None => None,
+                },
+            },
+            Entry::Vacant(entry) => match db.read_coin(prevout)? {
+                Some(coin) => {
+                    let mut coins = Coins::default();
+                    coins.add(prevout.vout, coin.clone());
+                    entry.insert(coins).get_mut(&prevout.vout)
+                }
+                None => None,
+            },
+        })
+    }
+
+    /// Get every unspent output for the inputs of a transaction
+    /// and ensure that the output exists and was not spent in a previous input
+    pub fn spend_inputs(&mut self, db: &mut ChainDB, tx: &Transaction) -> EmptyResult {
+        for input in &tx.input {
+            let coin = self.read_coin(db, &input.previous_output)?;
+            match coin {
+                Some(coin) => {
+                    if coin.spent {
+                        bail!("Coin spent");
+                    }
+                    coin.spent = true;
+                }
+                None => {
+                    bail!("Coin spent or didn't exist");
+                }
+            }
+        }
+        Ok(())
     }
 }
