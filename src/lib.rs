@@ -10,6 +10,8 @@ pub mod db;
 pub mod mempool;
 /// Send messages to and received messages from the Bitcoin P2P network
 pub mod net;
+/// Protocol details
+pub mod protocol;
 /// Utilities
 pub mod util;
 
