@@ -1,4 +1,4 @@
-use crate::blockchain::ChainEntry;
+use crate::blockchain::{ChainEntry, ChainState};
 use crate::coins::CoinEntry;
 use bitcoin::{
     consensus::{Decodable, Encodable},
@@ -83,6 +83,26 @@ impl DBValue for CoinEntry {
         self.coinbase.consensus_encode(&mut encoder)?;
         self.output.consensus_encode(&mut encoder)?;
         self.spent.consensus_encode(&mut encoder)?;
+        Ok(encoder.into_inner())
+    }
+}
+
+impl DBValue for ChainState {
+    fn decode(bytes: &[u8]) -> Result<Self, Error> {
+        let mut decoder = Cursor::new(bytes);
+        let mut state = ChainState::default();
+        state.tip = H256::consensus_decode(&mut decoder)?;
+        state.tx = u32::consensus_decode(&mut decoder)? as usize;
+        state.coin = u32::consensus_decode(&mut decoder)? as usize;
+        state.value = u64::consensus_decode(&mut decoder)?;
+        Ok(state)
+    }
+    fn encode(&self) -> Result<Vec<u8>, Error> {
+        let mut encoder = Cursor::new(Vec::new());
+        self.tip.consensus_encode(&mut encoder)?;
+        (self.tx as u32).consensus_encode(&mut encoder)?;
+        (self.coin as u32).consensus_encode(&mut encoder)?;
+        self.value.consensus_encode(&mut encoder)?;
         Ok(encoder.into_inner())
     }
 }
