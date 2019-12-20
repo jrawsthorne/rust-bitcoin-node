@@ -3,7 +3,7 @@ use crate::coins::CoinView;
 use crate::net::PeerId;
 use crate::protocol::NetworkParams;
 use crate::util::EmptyResult;
-use bitcoin::{hashes::sha256d::Hash as H256, util::hash::MerkleRoot, Block};
+use bitcoin::{hashes::sha256d::Hash as H256, Block};
 use failure::{ensure, Error};
 use std::sync::Arc;
 
@@ -51,6 +51,7 @@ pub struct Chain {
 impl Chain {
     /// Add a block to the chain and return a chain entry representing it if it was added successfully
     pub fn add(&mut self, block: Block) -> Result<Option<ChainEntry>, Error> {
+        block.header.validate_pow(&block.header.target())?;
         let prev = match self.db.get_entry_by_hash(block.header.prev_blockhash)? {
             None => todo!("orphan block"),
             Some(prev) => prev.clone(),
@@ -112,7 +113,7 @@ impl Chain {
         // TODO: verify checkpoint
 
         if self.is_historical(prev) {
-            ensure!(block.header.merkle_root == block.merkle_root());
+            ensure!(block.check_merkle_root());
             Ok(())
         } else {
             todo!("full verification");
