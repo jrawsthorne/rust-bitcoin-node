@@ -3,6 +3,7 @@ use bitcoin::network::constants::Network;
 pub struct NetworkParams {
     pub network: Network,
     pub last_checkpoint: u32,
+    pub halving_interval: u32,
 }
 
 impl Default for NetworkParams {
@@ -17,6 +18,7 @@ impl NetworkParams {
             Network::Bitcoin => Self {
                 network,
                 last_checkpoint: 525_000,
+                halving_interval: 210_000,
             },
             _ => todo!("regtest and testnet"),
         }
