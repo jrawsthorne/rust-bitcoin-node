@@ -8,6 +8,8 @@ pub mod coins;
 pub mod db;
 /// Manages a pool of transactions yet to be included in a block
 pub mod mempool;
+/// Basic CPU miner for use in tests
+pub mod mining;
 /// Send messages to and received messages from the Bitcoin P2P network
 pub mod net;
 /// Protocol details
