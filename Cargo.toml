@@ -1,5 +1,5 @@
 [package]
-name = "rust-bitcoin-node"
+name = "rust_bitcoin_node"
 version = "0.1.0"
 authors = ["Jake Rawsthorne <jake@jakerawsthorne.co.uk>"]
 edition = "2018"
@@ -7,7 +7,7 @@ edition = "2018"
 [dependencies]
 tokio = { version = "0.2", features=["full"] }
 # tokio-util = { version = "0.2", features=["codec"] }
-# rand = "0.7"
+rand = "0.5"
 bitcoin = { git="https://github.com/rust-bitcoin/rust-bitcoin", features=["bitcoinconsensus"] }
 log = "0.4"
 env_logger = "0.7"
