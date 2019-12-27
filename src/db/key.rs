@@ -38,13 +38,14 @@ impl Key {
     }
 
     pub fn col(&self) -> &'static str {
+        use Key::*;
         match self {
-            Key::ChainEntry(_) => COL_CHAIN_ENTRY,
-            Key::Coin(_, _) => COL_COIN,
-            Key::ChainEntryHash(_) => COL_CHAIN_ENTRY_HASH,
-            Key::ChainEntryHeight(_) => COL_CHAIN_ENTRY_HEIGHT,
-            Key::ChainNextHash(_) => COL_NEXT_HASH,
-            Key::ChainState | Key::ChainTip => COL_MISC,
+            ChainEntry(_) => COL_CHAIN_ENTRY,
+            Coin(_, _) => COL_COIN,
+            ChainEntryHash(_) => COL_CHAIN_ENTRY_HASH,
+            ChainEntryHeight(_) => COL_CHAIN_ENTRY_HEIGHT,
+            ChainNextHash(_) => COL_NEXT_HASH,
+            ChainState | Key::ChainTip => COL_MISC,
         }
     }
 }

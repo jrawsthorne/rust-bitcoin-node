@@ -1,9 +1,11 @@
-use bitcoin::network::constants::Network;
+use bitcoin::{consensus::params::Params, network::constants::Network, util::uint::Uint256};
 
+#[derive(Clone)]
 pub struct NetworkParams {
     pub network: Network,
     pub last_checkpoint: u32,
     pub halving_interval: u32,
+    pub pow_limit: Uint256,
 }
 
 impl Default for NetworkParams {
@@ -19,6 +21,7 @@ impl NetworkParams {
                 network,
                 last_checkpoint: 525_000,
                 halving_interval: 210_000,
+                pow_limit: Params::new(Network::Bitcoin).pow_limit,
             },
             _ => todo!("regtest and testnet"),
         }

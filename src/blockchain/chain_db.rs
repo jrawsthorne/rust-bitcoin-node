@@ -1,9 +1,11 @@
 use super::ChainEntry;
 use crate::coins::{CoinEntry, CoinView};
 use crate::db::{Batch, Database, DiskDatabase, Key};
+use crate::protocol::NetworkParams;
 use crate::util::EmptyResult;
 use bitcoin::{hashes::sha256d::Hash as H256, BitcoinHash, Block, OutPoint, TxOut};
 use failure::{bail, ensure, Error};
+use log::info;
 use std::collections::{hash_map::Entry, HashMap};
 
 #[derive(Default)]
@@ -42,21 +44,14 @@ impl ChainEntryCache {
     }
 
     fn write_batch(&mut self) {
+        use ChainEntryCacheOperation::*;
         for operation in self.batch.drain(..) {
             match operation {
-                ChainEntryCacheOperation::InsertHash(entry) => {
-                    self.hash.insert(entry.hash, entry);
-                }
-                ChainEntryCacheOperation::InsertHeight(entry) => {
-                    self.height.insert(entry.height, entry.clone());
-                }
-                ChainEntryCacheOperation::RemoveHeight(height) => {
-                    self.height.remove(&height);
-                }
-                ChainEntryCacheOperation::RemoveHash(hash) => {
-                    self.hash.remove(&hash);
-                }
-            }
+                InsertHash(entry) => self.hash.insert(entry.hash, entry),
+                InsertHeight(entry) => self.height.insert(entry.height, entry.clone()),
+                RemoveHeight(height) => self.height.remove(&height),
+                RemoveHash(hash) => self.hash.remove(&hash),
+            };
         }
     }
 
@@ -114,10 +109,11 @@ impl CoinCache {
     }
 
     fn write_batch(&mut self) {
+        use CoinCacheOperation::*;
         for operation in self.batch.drain(..).collect::<Vec<_>>() {
             match operation {
-                CoinCacheOperation::Insert(hash, index, entry) => self.insert(hash, index, &entry),
-                CoinCacheOperation::Remove(hash, index) => self.remove(hash, &index),
+                Insert(hash, index, entry) => self.insert(hash, index, &entry),
+                Remove(hash, index) => self.remove(hash, &index),
             }
         }
     }
@@ -137,9 +133,35 @@ pub struct ChainDB {
     current: Option<Batch>,
     /// Allows for atomic chain state update
     pending: Option<ChainState>,
+    network_params: NetworkParams,
 }
 
 impl ChainDB {
+    pub fn new(network_params: NetworkParams) -> ChainDB {
+        let mut chain_db = ChainDB::default();
+        chain_db.network_params = network_params;
+        chain_db
+    }
+
+    pub fn open(&mut self) -> EmptyResult {
+        match self.db.get(Key::ChainState)? {
+            Some(state) => self.state = state,
+            None => {
+                self.save_genesis()?;
+            }
+        }
+        Ok(())
+    }
+
+    fn save_genesis(&mut self) -> EmptyResult {
+        use bitcoin::blockdata::constants::genesis_block;
+        let genesis = genesis_block(self.network_params.network);
+        let entry = ChainEntry::from_block(&genesis, None);
+        let view = CoinView::default();
+        info!("Writing genesis block to ChainDB.");
+        self.save(&entry, &genesis, Some(&view))
+    }
+
     fn batch(&mut self) -> Result<&mut Batch, Error> {
         ensure!(self.current.is_some());
         Ok(self.current.as_mut().unwrap())
@@ -181,7 +203,7 @@ impl ChainDB {
         Ok(())
     }
 
-    fn get_tip(&mut self) -> Result<Option<&ChainEntry>, Error> {
+    pub fn get_tip(&mut self) -> Result<Option<&ChainEntry>, Error> {
         let tip = self.state.tip;
         self.get_entry_by_hash(tip)
     }

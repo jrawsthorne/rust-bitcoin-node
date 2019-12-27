@@ -42,15 +42,31 @@ pub trait ChainListener {
 #[derive(Default)]
 pub struct Chain {
     db: ChainDB,
-    tip: ChainEntry,
+    pub tip: ChainEntry,
     height: u32,
     listeners: Vec<Arc<dyn ChainListener>>,
     options: ChainOptions,
 }
 
 impl Chain {
+    pub fn new(network_params: NetworkParams) -> Self {
+        Self {
+            db: ChainDB::new(network_params.clone()),
+            tip: ChainEntry::default(),
+            height: 0,
+            listeners: vec![],
+            options: Default::default(),
+        }
+    }
+
+    pub fn open(&mut self) -> EmptyResult {
+        self.db.open()?;
+        self.tip = self.db.get_tip()?.unwrap().clone();
+        Ok(())
+    }
+
     /// Add a block to the chain and return a chain entry representing it if it was added successfully
-    pub fn add(&mut self, block: Block) -> Result<Option<ChainEntry>, Error> {
+    pub fn add(&mut self, block: &Block) -> Result<Option<ChainEntry>, Error> {
         block.header.validate_pow(&block.header.target())?;
         let prev = match self.db.get_entry_by_hash(block.header.prev_blockhash)? {
             None => todo!("orphan block"),
@@ -60,10 +76,10 @@ impl Chain {
         Ok(Some(entry))
     }
 
-    fn connect(&mut self, prev: &ChainEntry, block: Block) -> Result<ChainEntry, Error> {
+    fn connect(&mut self, prev: &ChainEntry, block: &Block) -> Result<ChainEntry, Error> {
         ensure!(block.header.prev_blockhash == prev.hash);
 
-        let entry = ChainEntry::from_block(&block, Some(prev));
+        let entry = ChainEntry::from_block(block, Some(prev));
 
         if entry.chainwork <= self.tip.chainwork {
             todo!("forked chain");
@@ -76,23 +92,23 @@ impl Chain {
     fn set_best_chain(
         &mut self,
         entry: &ChainEntry,
-        block: Block,
+        block: &Block,
         prev: &ChainEntry,
     ) -> EmptyResult {
         if entry.prev_block != self.tip.hash {
             todo!("reorg");
         }
 
-        let view = self.verify_context(&block, prev)?;
+        let view = self.verify_context(block, prev)?;
 
-        self.db.save(entry, &block, Some(&view))?;
+        self.db.save(entry, block, Some(&view))?;
 
         self.tip = entry.clone();
         self.height = entry.height;
 
         self.notify_tip(entry);
-        self.notify_block(&block, entry);
-        self.notify_connect(entry, &block, &view);
+        self.notify_block(block, entry);
+        self.notify_connect(entry, block, &view);
 
         Ok(())
     }

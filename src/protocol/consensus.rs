@@ -68,7 +68,7 @@ mod test {
             sum += subsidy * 1000;
             assert!(sum >= 0 && sum <= MAX_MONEY); // TODO: change value to be negative
         }
-        assert_eq!(sum, 2_099_999_997_690_000);
+        assert_eq!(sum, 2_099_999_997_690_000); // Max Bitcoin money supply if all subsidies were claimed (they haven't been)
     }
 
     fn interval_params(interval: u32) -> NetworkParams {
