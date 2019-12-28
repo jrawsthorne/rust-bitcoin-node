@@ -1,9 +1,9 @@
 use super::NetworkParams;
 
 /// 1 Bitcoin is 100 million satoshis
-const COIN: u64 = 100_000_000;
+pub const COIN: u64 = 100_000_000;
 /// The initial block subsidy, 50 Bitcoin
-const BASE_REWARD: u64 = 50 * COIN;
+pub const BASE_REWARD: u64 = 50 * COIN;
 /// The maximum money supply, 21 million Bitcoin
 const MAX_MONEY: u64 = 21_000_000 * COIN;
 
