@@ -123,11 +123,10 @@ impl CoinCache {
     }
 }
 
-#[derive(Default)]
 pub struct ChainDB {
-    coin_cache: CoinCache,
+    pub coin_cache: CoinCache,
     entry_cache: ChainEntryCache,
-    state: ChainState,
+    pub state: ChainState,
     db: DiskDatabase,
     /// Allows for atomic writes to the database
     current: Option<Batch>,
@@ -136,11 +135,21 @@ pub struct ChainDB {
     network_params: NetworkParams,
 }
 
+pub struct ChainDBOptions {
+    pub path: std::path::PathBuf,
+}
+
 impl ChainDB {
-    pub fn new(network_params: NetworkParams) -> ChainDB {
-        let mut chain_db = ChainDB::default();
-        chain_db.network_params = network_params;
-        chain_db
+    pub fn new(network_params: NetworkParams, options: ChainDBOptions) -> Self {
+        Self {
+            network_params,
+            db: DiskDatabase::new(options.path),
+            coin_cache: Default::default(),
+            entry_cache: Default::default(),
+            state: Default::default(),
+            current: Default::default(),
+            pending: Default::default(),
+        }
     }
 
     pub fn open(&mut self) -> EmptyResult {

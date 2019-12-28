@@ -26,20 +26,10 @@ pub struct DiskDatabase {
     db: DB,
 }
 
-impl Default for DiskDatabase {
-    fn default() -> Self {
-        let path = "./data";
-        let mut db_options = Options::default();
-        db_options.create_if_missing(true);
-        db_options.create_missing_column_families(true);
-        Self {
-            db: DB::open_cf(&db_options, path, &COLUMNS).unwrap(),
-        }
-    }
-}
+use std::path::PathBuf;
 
 impl DiskDatabase {
-    pub fn new(path: String) -> Self {
+    pub fn new(path: PathBuf) -> Self {
         let mut db_options = Options::default();
         db_options.create_if_missing(true);
         db_options.create_missing_column_families(true);

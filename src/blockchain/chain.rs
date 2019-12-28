@@ -1,11 +1,11 @@
-use super::{ChainDB, ChainEntry};
+use super::{ChainDB, ChainDBOptions, ChainEntry};
 use crate::coins::CoinView;
 use crate::net::PeerId;
 use crate::protocol::NetworkParams;
 use crate::util::EmptyResult;
 use bitcoin::{hashes::sha256d::Hash as H256, Block};
 use failure::{ensure, Error};
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
 /// Trait that handles chain events
 pub trait ChainListener {
@@ -39,23 +39,30 @@ pub trait ChainListener {
     fn handle_checkpoint(&self, _hash: H256, _height: u32) {}
 }
 
-#[derive(Default)]
 pub struct Chain {
-    db: ChainDB,
+    pub db: ChainDB,
     pub tip: ChainEntry,
-    height: u32,
+    pub height: u32,
     listeners: Vec<Arc<dyn ChainListener>>,
     options: ChainOptions,
 }
 
 impl Chain {
-    pub fn new(network_params: NetworkParams) -> Self {
+    pub fn new(network_params: NetworkParams, options: ChainOptions) -> Self {
         Self {
-            db: ChainDB::new(network_params.clone()),
+            db: ChainDB::new(
+                network_params.clone(),
+                ChainDBOptions {
+                    path: options.path.clone(),
+                },
+            ),
             tip: ChainEntry::default(),
             height: 0,
             listeners: vec![],
-            options: Default::default(),
+            options: ChainOptions {
+                path: options.path,
+                network: network_params,
+            },
         }
     }
 
@@ -172,9 +179,13 @@ impl Chain {
             listener.handle_connect(entry, block, view);
         }
     }
+
+    pub fn add_listener(&mut self, listener: Arc<dyn ChainListener>) {
+        self.listeners.push(listener);
+    }
 }
 
-#[derive(Default)]
-struct ChainOptions {
-    network: NetworkParams,
+pub struct ChainOptions {
+    pub network: NetworkParams,
+    pub path: PathBuf,
 }

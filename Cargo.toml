@@ -17,3 +17,6 @@ env_logger = "0.7"
 failure = "0.1"
 rocksdb = "0.13"
 # lru = "0.4"
+
+[dev-dependencies]
+tempfile = "3"

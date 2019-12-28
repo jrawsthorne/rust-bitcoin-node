@@ -23,7 +23,13 @@ impl NetworkParams {
                 halving_interval: 210_000,
                 pow_limit: Params::new(Network::Bitcoin).pow_limit,
             },
-            _ => todo!("regtest and testnet"),
+            Network::Regtest => Self {
+                network,
+                last_checkpoint: 0,
+                halving_interval: 210_000,
+                pow_limit: Params::new(network).pow_limit,
+            },
+            _ => todo!("testnet"),
         }
     }
 }
