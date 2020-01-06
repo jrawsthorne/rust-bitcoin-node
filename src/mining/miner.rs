@@ -57,8 +57,7 @@ impl Miner {
     }
 
     fn get_address(&self) -> Address {
-        use bitcoin::secp256k1::Secp256k1;
-        use rand::thread_rng;
+        use bitcoin::secp256k1::{rand::thread_rng, Secp256k1};
 
         let secp = Secp256k1::new();
 
