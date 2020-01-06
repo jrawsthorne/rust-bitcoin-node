@@ -41,7 +41,13 @@ impl CoinView {
     }
 
     pub fn get_output(&self, prevout: &OutPoint) -> Option<&TxOut> {
-        self.get(prevout.txid)?.get_output(&prevout.vout)
+        let coins = self.get(prevout.txid)?;
+        coins.get_output(&prevout.vout)
+    }
+
+    pub fn get_entry(&self, prevout: &OutPoint) -> Option<&CoinEntry> {
+        let coins = self.get(prevout.txid)?;
+        coins.get(&prevout.vout)
     }
 
     /// Get a coin from the coin view or from the database if it exists
