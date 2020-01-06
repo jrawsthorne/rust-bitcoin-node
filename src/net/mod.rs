@@ -1,3 +1,4 @@
+mod codec;
 mod connection;
 mod p2p;
 mod peer;
