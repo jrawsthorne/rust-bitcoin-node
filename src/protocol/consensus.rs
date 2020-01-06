@@ -5,7 +5,12 @@ pub const COIN: u64 = 100_000_000;
 /// The initial block subsidy, 50 Bitcoin
 pub const BASE_REWARD: u64 = 50 * COIN;
 /// The maximum money supply, 21 million Bitcoin
-const MAX_MONEY: u64 = 21_000_000 * COIN;
+pub const MAX_MONEY: u64 = 21_000_000 * COIN;
+/// Number of confirmations before a coinbase transaction can be spent
+pub const COINBASE_MATURITY: u32 = 100;
+/// Threshold for nLockTime: below this value it is interpreted as block number,
+/// otherwise as UNIX timestamp.
+pub const LOCKTIME_THRESHOLD: u32 = 500000000;
 
 /// Get the correct miner subsidy for a block at a certain height
 /// On the main bitcoin network this halves the subsidy every 210,000 blocks (~4 years)

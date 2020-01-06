@@ -1,10 +1,11 @@
 use super::{ChainDB, ChainDBOptions, ChainEntry};
 use crate::coins::CoinView;
 use crate::net::PeerId;
-use crate::protocol::NetworkParams;
+use crate::protocol::{consensus, NetworkParams};
 use crate::util::EmptyResult;
+use crate::verification::{BlockVerifier, TransactionVerifier};
 use bitcoin::{hashes::sha256d::Hash as H256, Block};
-use failure::{ensure, Error};
+use failure::{bail, ensure, Error};
 use std::{path::PathBuf, sync::Arc};
 
 /// Trait that handles chain events
@@ -48,10 +49,10 @@ pub struct Chain {
 }
 
 impl Chain {
-    pub fn new(network_params: NetworkParams, options: ChainOptions) -> Self {
+    pub fn new(options: ChainOptions) -> Self {
         Self {
             db: ChainDB::new(
-                network_params.clone(),
+                options.network.clone(),
                 ChainDBOptions {
                     path: options.path.clone(),
                 },
@@ -59,10 +60,7 @@ impl Chain {
             tip: ChainEntry::default(),
             height: 0,
             listeners: vec![],
-            options: ChainOptions {
-                path: options.path,
-                network: network_params,
-            },
+            options,
         }
     }
 
@@ -74,7 +72,7 @@ impl Chain {
 
     /// Add a block to the chain and return a chain entry representing it if it was added successfully
     pub fn add(&mut self, block: &Block) -> Result<Option<ChainEntry>, Error> {
-        block.header.validate_pow(&block.header.target())?;
+        block.validate_pow()?;
         let prev = match self.db.get_entry_by_hash(block.header.prev_blockhash)? {
             None => todo!("orphan block"),
             Some(prev) => prev.clone(),
@@ -121,13 +119,64 @@ impl Chain {
     }
 
     fn verify_context(&mut self, block: &Block, prev: &ChainEntry) -> Result<CoinView, Error> {
+        // non contextual verification;
         self.verify(&block, prev)?;
 
         if self.is_historical(prev) {
-            return self.update_inputs(block, prev);
+            // skip full verification if checkpoint block
+            self.update_inputs(block, prev)
         } else {
-            todo!("full verification");
+            // TODO: verify duplicate txids
+
+            // do full verification
+            self.verify_inputs(block, prev)
         }
+    }
+
+    fn verify_inputs(&mut self, block: &Block, prev: &ChainEntry) -> Result<CoinView, Error> {
+        let mut view = CoinView::default();
+        let height = prev.height + 1;
+
+        // let mut sigops = 0;
+        let mut reward = 0;
+
+        for (i, tx) in block.txdata.iter().enumerate() {
+            if i > 0 {
+                view.spend_inputs(&mut self.db, tx)?;
+            }
+
+            if i > 0 && tx.version >= 2 {
+                todo!("verify locktime");
+            }
+
+            // TODO: sigops
+            // sigops += tx.get_sigops_cost(&view);
+
+            // if sigops > consensus::MAX_BLOCK_SIGOPS_COST {
+            //     bail!("bad-blk-sigops");
+            // }
+
+            if i > 0 {
+                let fee = tx.check_inputs(&view, height)?;
+                reward += fee;
+
+                if reward > consensus::MAX_MONEY {
+                    bail!("bad-txns-accumulated-fee-outofrange");
+                }
+            }
+
+            view.add_tx(tx, height);
+        }
+
+        reward += consensus::get_block_subsidy(height, &self.options.network);
+
+        if block.get_claimed()? > reward {
+            bail!("bad-cb-amount");
+        }
+
+        // TODO: script verification
+
+        Ok(view)
     }
 
     fn verify(&self, block: &Block, prev: &ChainEntry) -> EmptyResult {
@@ -139,7 +188,19 @@ impl Chain {
             ensure!(block.check_merkle_root());
             Ok(())
         } else {
-            todo!("full verification");
+            // TODO: non contextual block verification
+
+            // TODO: check block bits correct
+
+            // TODO: check time
+
+            // TODO: check BIPs
+
+            // TODO: check tx sequences and locks
+
+            // TODO: check block weight
+
+            Ok(())
         }
     }
 

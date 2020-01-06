@@ -7,15 +7,11 @@ use std::path::PathBuf;
 use tempfile::TempDir;
 
 fn chain(path: PathBuf) -> Chain {
-    let mut network_params = NetworkParams::from_network(bitcoin::Network::Regtest);
-    network_params.last_checkpoint = 500;
-    let mut chain = Chain::new(
-        network_params.clone(),
-        ChainOptions {
-            network: network_params,
-            path,
-        },
-    );
+    let network_params = NetworkParams::from_network(bitcoin::Network::Regtest);
+    let mut chain = Chain::new(ChainOptions {
+        network: network_params,
+        path,
+    });
     chain.open().unwrap();
     chain
 }

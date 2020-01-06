@@ -16,6 +16,8 @@ pub mod net;
 pub mod protocol;
 /// Utilities
 pub mod util;
+/// Verification
+pub mod verification;
 
 pub use blockchain::{ChainEntry, ChainListener};
 pub use coins::{CoinEntry, CoinView, Coins};
