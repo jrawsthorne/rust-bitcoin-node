@@ -6,6 +6,7 @@ pub struct NetworkParams {
     pub last_checkpoint: u32,
     pub halving_interval: u32,
     pub pow_limit: Uint256,
+    pub dns_seeds: Vec<&'static str>,
 }
 
 impl Default for NetworkParams {
@@ -22,12 +23,21 @@ impl NetworkParams {
                 last_checkpoint: 525_000,
                 halving_interval: 210_000,
                 pow_limit: Params::new(Network::Bitcoin).pow_limit,
+                dns_seeds: vec![
+                    "seed.bitcoin.sipa.be",          // Pieter Wuille
+                    "dnsseed.bluematt.me",           // Matt Corallo
+                    "dnsseed.bitcoin.dashjr.org",    // Luke Dashjr
+                    "seed.bitcoinstats.com",         // Christian Decker
+                    "seed.bitcoin.jonasschnelli.ch", // Jonas Schnelli
+                    "seed.btc.petertodd.org",        // Peter Todd
+                ],
             },
             Network::Regtest => Self {
                 network,
                 last_checkpoint: 0,
                 halving_interval: 210_000,
                 pow_limit: Params::new(network).pow_limit,
+                dns_seeds: vec![],
             },
             _ => todo!("testnet"),
         }
