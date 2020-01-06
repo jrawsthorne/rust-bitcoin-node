@@ -86,16 +86,13 @@ impl CoinCache {
         }
     }
 
-    fn remove(&mut self, hash: H256, index: &u32) {
-        match self.coins.entry(hash) {
-            Entry::Occupied(mut entry) => {
-                let coins = entry.get_mut();
-                coins.remove(index);
-                if coins.is_empty() {
-                    entry.remove();
-                }
+    fn remove(&mut self, hash: H256, index: u32) {
+        if let Entry::Occupied(mut entry) = self.coins.entry(hash) {
+            let coins = entry.get_mut();
+            coins.remove(&index);
+            if coins.is_empty() {
+                entry.remove();
             }
-            _ => (),
         }
     }
 
@@ -113,7 +110,7 @@ impl CoinCache {
         for operation in self.batch.drain(..).collect::<Vec<_>>() {
             match operation {
                 Insert(hash, index, entry) => self.insert(hash, index, &entry),
-                Remove(hash, index) => self.remove(hash, &index),
+                Remove(hash, index) => self.remove(hash, index),
             }
         }
     }

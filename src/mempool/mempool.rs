@@ -6,7 +6,7 @@ use failure::Error;
 /// Trait that handles mempool events
 pub trait MempoolListener {
     fn handle_tx(&self, _tx: &Transaction, _view: &CoinView) {}
-    fn handle_bad_orphan(&self, _error: &Error, _peer_id: &PeerId) {}
+    fn handle_bad_orphan(&self, _error: &Error, _peer_id: PeerId) {}
     fn handle_confirmed(&self, _tx: &Transaction, _block: &Block) {}
     fn handle_error(&self, _error: &Error) {}
     fn handle_unconfirmed(&self, _tx: &Transaction, _block: &Block) {}

@@ -25,7 +25,7 @@ pub trait ChainListener {
     /// Called when the chain is fully synced
     fn handle_full(&self) {}
     /// Called when an orphan block couldn't be connected
-    fn handle_bad_orphan(&self, _error: &Error, _peer_id: &PeerId) {}
+    fn handle_bad_orphan(&self, _error: &Error, _peer_id: PeerId) {}
     /// Called when the blockchain tip changes
     fn handle_tip(&self, _tip: &ChainEntry) {}
     /// Called when a competing chain with higher chainwork is received
@@ -220,7 +220,7 @@ impl Chain {
     }
 
     fn is_historical(&self, prev: &ChainEntry) -> bool {
-        prev.height + 1 <= self.options.network.last_checkpoint
+        prev.height < self.options.network.last_checkpoint
     }
 
     fn notify_block(&self, block: &Block, entry: &ChainEntry) {

@@ -10,7 +10,7 @@ pub const MAX_MONEY: u64 = 21_000_000 * COIN;
 pub const COINBASE_MATURITY: u32 = 100;
 /// Threshold for nLockTime: below this value it is interpreted as block number,
 /// otherwise as UNIX timestamp.
-pub const LOCKTIME_THRESHOLD: u32 = 500000000;
+pub const LOCKTIME_THRESHOLD: u32 = 500_000_000;
 
 /// Get the correct miner subsidy for a block at a certain height
 /// On the main bitcoin network this halves the subsidy every 210,000 blocks (~4 years)

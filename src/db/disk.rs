@@ -3,17 +3,17 @@ use crate::util::EmptyResult;
 use failure::{err_msg, Error};
 use rocksdb::{ColumnFamily, Options, WriteBatch, DB};
 
-pub const COL_CHAIN_ENTRY: &'static str = "0";
-pub const COL_CHAIN_ENTRY_HEIGHT: &'static str = "1";
-pub const COL_CHAIN_ENTRY_HASH: &'static str = "2";
-pub const COL_COIN: &'static str = "3";
-pub const COL_NEXT_HASH: &'static str = "4";
-pub const COL_MISC: &'static str = "5";
+pub const COL_CHAIN_ENTRY: &str = "0";
+pub const COL_CHAIN_ENTRY_HEIGHT: &str = "1";
+pub const COL_CHAIN_ENTRY_HASH: &str = "2";
+pub const COL_COIN: &str = "3";
+pub const COL_NEXT_HASH: &str = "4";
+pub const COL_MISC: &str = "5";
 
 pub const KEY_TIP: [u8; 1] = [0];
 pub const KEY_CHAIN_STATE: [u8; 1] = [1];
 
-pub const COLUMNS: [&'static str; 6] = [
+pub const COLUMNS: [&str; 6] = [
     COL_CHAIN_ENTRY,
     COL_CHAIN_ENTRY_HEIGHT,
     COL_CHAIN_ENTRY_HASH,

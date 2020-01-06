@@ -42,12 +42,12 @@ impl CoinView {
 
     pub fn get_output(&self, prevout: &OutPoint) -> Option<&TxOut> {
         let coins = self.get(prevout.txid)?;
-        coins.get_output(&prevout.vout)
+        coins.get_output(prevout.vout)
     }
 
     pub fn get_entry(&self, prevout: &OutPoint) -> Option<&CoinEntry> {
         let coins = self.get(prevout.txid)?;
-        coins.get(&prevout.vout)
+        coins.get(prevout.vout)
     }
 
     /// Get a coin from the coin view or from the database if it exists
@@ -68,7 +68,7 @@ impl CoinView {
                 Some(coin) => {
                     let mut coins = Coins::default();
                     coins.add(prevout.vout, coin.clone());
-                    entry.insert(coins).get_mut(&prevout.vout)
+                    entry.insert(coins).get_mut(prevout.vout)
                 }
                 None => None,
             },

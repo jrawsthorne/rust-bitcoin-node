@@ -119,7 +119,8 @@ impl ConnectionListener for Peer {
         }
 
         if let Err(error) = self.send_version().await {
-            self.handle_error(&error.into()).await;
+            self.error(&error).await;
+            self.destroy().await;
         }
     }
 
@@ -138,8 +139,8 @@ impl ConnectionListener for Peer {
             NetworkMessage::Ping(nonce) => self.send(NetworkMessage::Pong(*nonce)).await,
             _ => Ok(()),
         };
-        if let Err(err) = res {
-            self.handle_error(&err.into()).await;
+        if let Err(error) = res {
+            self.handle_error(&error).await;
             return;
         }
         if let Some(listener) = &self.listener {

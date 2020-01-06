@@ -9,6 +9,12 @@ pub struct Miner {
     network: Network,
 }
 
+impl Default for Miner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Miner {
     pub fn new() -> Self {
         Self {

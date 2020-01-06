@@ -38,7 +38,7 @@ impl BlockTemplate {
             version,
             time,
             bits,
-            target: target,
+            target,
         }
     }
 

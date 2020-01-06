@@ -16,22 +16,22 @@ impl Coins {
     }
 
     /// Check if the set contains a coin for an output index
-    pub fn has(&self, index: &u32) -> bool {
-        self.outputs.contains_key(index)
+    pub fn has(&self, index: u32) -> bool {
+        self.outputs.contains_key(&index)
     }
 
     /// Get a reference to an entry for an output index
-    pub fn get(&self, index: &u32) -> Option<&CoinEntry> {
-        self.outputs.get(index)
+    pub fn get(&self, index: u32) -> Option<&CoinEntry> {
+        self.outputs.get(&index)
     }
 
     /// Get a mutable reference to an entry for an output index
-    pub fn get_mut(&mut self, index: &u32) -> Option<&mut CoinEntry> {
-        self.outputs.get_mut(index)
+    pub fn get_mut(&mut self, index: u32) -> Option<&mut CoinEntry> {
+        self.outputs.get_mut(&index)
     }
 
     /// Get the transaction output for an output index if the index exists
-    pub fn get_output(&self, index: &u32) -> Option<&TxOut> {
+    pub fn get_output(&self, index: u32) -> Option<&TxOut> {
         if let Some(entry) = self.get(index) {
             Some(&entry.output)
         } else {
