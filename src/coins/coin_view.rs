@@ -1,7 +1,7 @@
 use super::{CoinEntry, Coins};
 use crate::blockchain::ChainDB;
 use crate::util::EmptyResult;
-use bitcoin::{hashes::sha256d::Hash as H256, BitcoinHash, OutPoint, Transaction, TxOut};
+use bitcoin::{OutPoint, Transaction, TxOut, Txid};
 use failure::{bail, Error};
 use std::collections::{hash_map::Entry, HashMap};
 
@@ -9,33 +9,33 @@ use std::collections::{hash_map::Entry, HashMap};
 #[derive(Debug, Clone, Default)]
 pub struct CoinView {
     /// A map of transaction ID to coins
-    pub map: HashMap<H256, Coins>,
+    pub map: HashMap<Txid, Coins>,
 }
 
 impl CoinView {
     /// Get a reference to the coins for a transaction ID
-    pub fn get(&self, hash: H256) -> Option<&Coins> {
+    pub fn get(&self, hash: Txid) -> Option<&Coins> {
         self.map.get(&hash)
     }
 
     /// Get a mutable reference to the coins for a transaction ID
-    pub fn get_mut(&mut self, hash: H256) -> Option<&mut Coins> {
+    pub fn get_mut(&mut self, hash: Txid) -> Option<&mut Coins> {
         self.map.get_mut(&hash)
     }
 
     /// Add the coins for a transaction ID
-    pub fn add(&mut self, hash: H256, coins: Coins) {
+    pub fn add(&mut self, hash: Txid, coins: Coins) {
         self.map.insert(hash, coins);
     }
 
     /// Get the coins for a transaction ID or create an empty set
-    pub fn ensure(&mut self, hash: H256) -> &mut Coins {
+    pub fn ensure(&mut self, hash: Txid) -> &mut Coins {
         self.map.entry(hash).or_default()
     }
 
     /// Add a new transaction to the view
     pub fn add_tx(&mut self, tx: &Transaction, height: u32) {
-        let hash = tx.bitcoin_hash();
+        let hash = tx.txid();
         let coins = Coins::from_tx(tx, height);
         self.add(hash, coins)
     }

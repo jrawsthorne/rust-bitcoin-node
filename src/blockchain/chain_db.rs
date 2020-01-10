@@ -3,7 +3,7 @@ use crate::coins::{CoinEntry, CoinView};
 use crate::db::{Batch, Database, DiskDatabase, Key};
 use crate::protocol::NetworkParams;
 use crate::util::EmptyResult;
-use bitcoin::{hashes::sha256d::Hash as H256, BitcoinHash, Block, OutPoint, TxOut};
+use bitcoin::{BitcoinHash, Block, BlockHash, OutPoint, TxOut, Txid};
 use failure::{bail, ensure, Error};
 use log::info;
 use std::collections::{hash_map::Entry, HashMap};
@@ -11,14 +11,14 @@ use std::collections::{hash_map::Entry, HashMap};
 #[derive(Default)]
 pub struct ChainEntryCache {
     height: HashMap<u32, ChainEntry>,
-    hash: HashMap<H256, ChainEntry>,
+    hash: HashMap<BlockHash, ChainEntry>,
     batch: Vec<ChainEntryCacheOperation>,
 }
 
 enum ChainEntryCacheOperation {
     InsertHash(ChainEntry),
     InsertHeight(ChainEntry),
-    RemoveHash(H256),
+    RemoveHash(BlockHash),
     RemoveHeight(u32),
 }
 
@@ -61,18 +61,18 @@ impl ChainEntryCache {
 }
 
 enum CoinCacheOperation {
-    Insert(H256, u32, CoinEntry),
-    Remove(H256, u32),
+    Insert(Txid, u32, CoinEntry),
+    Remove(Txid, u32),
 }
 
 #[derive(Default)]
 pub struct CoinCache {
-    coins: HashMap<H256, HashMap<u32, CoinEntry>>,
+    coins: HashMap<Txid, HashMap<u32, CoinEntry>>,
     batch: Vec<CoinCacheOperation>,
 }
 
 impl CoinCache {
-    fn insert(&mut self, hash: H256, index: u32, coin_entry: &CoinEntry) {
+    fn insert(&mut self, hash: Txid, index: u32, coin_entry: &CoinEntry) {
         match self.coins.entry(hash) {
             Entry::Occupied(mut entry) => {
                 let coins = entry.get_mut();
@@ -86,7 +86,7 @@ impl CoinCache {
         }
     }
 
-    fn remove(&mut self, hash: H256, index: u32) {
+    fn remove(&mut self, hash: Txid, index: u32) {
         if let Entry::Occupied(mut entry) = self.coins.entry(hash) {
             let coins = entry.get_mut();
             coins.remove(&index);
@@ -96,12 +96,12 @@ impl CoinCache {
         }
     }
 
-    fn insert_batch(&mut self, hash: H256, index: u32, coin_entry: &CoinEntry) {
+    fn insert_batch(&mut self, hash: Txid, index: u32, coin_entry: &CoinEntry) {
         self.batch
             .push(CoinCacheOperation::Insert(hash, index, coin_entry.clone()));
     }
 
-    fn remove_batch(&mut self, hash: H256, index: u32) {
+    fn remove_batch(&mut self, hash: Txid, index: u32) {
         self.batch.push(CoinCacheOperation::Remove(hash, index));
     }
 
@@ -214,7 +214,7 @@ impl ChainDB {
         self.get_entry_by_hash(tip)
     }
 
-    pub fn get_entry_by_hash(&mut self, hash: H256) -> Result<Option<&ChainEntry>, Error> {
+    pub fn get_entry_by_hash(&mut self, hash: BlockHash) -> Result<Option<&ChainEntry>, Error> {
         Ok(match self.entry_cache.hash.entry(hash) {
             Entry::Occupied(entry) => Some(entry.into_mut()),
             Entry::Vacant(entry) => {
@@ -374,7 +374,7 @@ impl ChainDB {
 #[derive(Default, Clone, Debug)]
 pub struct ChainState {
     /// Hash of the tip of the chain
-    pub tip: H256,
+    pub tip: BlockHash,
     /// Number of transactions that have occurred
     pub tx: usize,
     /// Nnumber of unspent coins
@@ -399,7 +399,7 @@ impl ChainState {
         self.value -= coin.value;
     }
 
-    fn commit(&mut self, hash: H256) -> &ChainState {
+    fn commit(&mut self, hash: BlockHash) -> &ChainState {
         self.tip = hash;
         self.commited = true;
         self

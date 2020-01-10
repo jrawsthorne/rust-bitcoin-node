@@ -1,16 +1,13 @@
 use crate::protocol::{get_block_subsidy, NetworkParams};
 use bitcoin::util::uint::Uint256;
-use bitcoin::{
-    blockdata::script, hashes::sha256d::Hash as H256, Address, BlockHeader, Transaction, TxIn,
-    TxOut,
-};
+use bitcoin::{blockdata::script, Address, BlockHash, BlockHeader, Transaction, TxIn, TxOut};
 
 pub struct BlockTemplate {
     pub height: u32,
     pub address: Address,
     network: NetworkParams,
     fees: u64,
-    pub prev_blockhash: H256,
+    pub prev_blockhash: BlockHash,
     pub version: u32,
     pub time: u32,
     pub bits: u32,
@@ -21,7 +18,7 @@ impl BlockTemplate {
     pub fn new(
         height: u32,
         address: Address,
-        prev_blockhash: H256,
+        prev_blockhash: BlockHash,
         version: u32,
         time: u32,
         target: Uint256,

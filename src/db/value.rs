@@ -2,9 +2,8 @@ use crate::blockchain::{ChainEntry, ChainState};
 use crate::coins::CoinEntry;
 use bitcoin::{
     consensus::{Decodable, Encodable},
-    hashes::sha256d::Hash as H256,
     util::uint::Uint256,
-    TxOut,
+    BlockHash, TxMerkleNode, TxOut,
 };
 use failure::Error;
 use std::io::Cursor;
@@ -30,10 +29,10 @@ impl DBValue for ChainEntry {
     fn decode(bytes: &[u8]) -> Result<Self, Error> {
         let mut decoder = Cursor::new(bytes);
         let mut entry = ChainEntry::default();
-        entry.hash = H256::consensus_decode(&mut decoder)?;
+        entry.hash = BlockHash::consensus_decode(&mut decoder)?;
         entry.version = u32::consensus_decode(&mut decoder)?;
-        entry.prev_block = H256::consensus_decode(&mut decoder)?;
-        entry.merkle_root = H256::consensus_decode(&mut decoder)?;
+        entry.prev_block = BlockHash::consensus_decode(&mut decoder)?;
+        entry.merkle_root = TxMerkleNode::consensus_decode(&mut decoder)?;
         entry.time = u32::consensus_decode(&mut decoder)?;
         entry.bits = u32::consensus_decode(&mut decoder)?;
         entry.nonce = u32::consensus_decode(&mut decoder)?;
@@ -91,7 +90,7 @@ impl DBValue for ChainState {
     fn decode(bytes: &[u8]) -> Result<Self, Error> {
         let mut decoder = Cursor::new(bytes);
         let mut state = ChainState::default();
-        state.tip = H256::consensus_decode(&mut decoder)?;
+        state.tip = BlockHash::consensus_decode(&mut decoder)?;
         state.tx = u32::consensus_decode(&mut decoder)? as usize;
         state.coin = u32::consensus_decode(&mut decoder)? as usize;
         state.value = u64::consensus_decode(&mut decoder)?;

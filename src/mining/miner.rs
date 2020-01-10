@@ -46,7 +46,7 @@ impl Miner {
         let mut block_header = BlockHeader {
             version: template.version,
             prev_blockhash: template.prev_blockhash,
-            merkle_root: coinbase.txid(),
+            merkle_root: coinbase.txid().as_hash().into(),
             time: template.time,
             bits,
             nonce: 0,

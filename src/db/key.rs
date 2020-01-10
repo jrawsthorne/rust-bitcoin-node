@@ -4,17 +4,17 @@ use super::{
 };
 use bitcoin::{
     consensus::encode::{serialize, Encodable},
-    hashes::sha256d::Hash as H256,
+    BlockHash, Txid,
 };
 use failure::Error;
 use std::io::Cursor;
 
 pub enum Key {
-    ChainEntry(H256),
-    Coin(H256, u32),
+    ChainEntry(BlockHash),
+    Coin(Txid, u32),
     ChainEntryHash(u32),
-    ChainEntryHeight(H256),
-    ChainNextHash(H256),
+    ChainEntryHeight(BlockHash),
+    ChainNextHash(BlockHash),
     ChainState,
     ChainTip,
 }

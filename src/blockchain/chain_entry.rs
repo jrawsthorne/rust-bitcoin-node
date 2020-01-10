@@ -1,15 +1,13 @@
-use bitcoin::{
-    hashes::sha256d::Hash as H256, util::uint::Uint256, BitcoinHash, Block, BlockHeader,
-};
+use bitcoin::{util::uint::Uint256, BitcoinHash, Block, BlockHash, BlockHeader, TxMerkleNode};
 
 /// An entry in the blockchain.
 /// Essentially a block header with its height in the blockchain specified
 #[derive(Debug, Clone, Default)]
 pub struct ChainEntry {
-    pub hash: H256,
+    pub hash: BlockHash,
     pub version: u32,
-    pub prev_block: H256,
-    pub merkle_root: H256,
+    pub prev_block: BlockHash,
+    pub merkle_root: TxMerkleNode,
     pub time: u32,
     pub bits: u32,
     pub nonce: u32,
