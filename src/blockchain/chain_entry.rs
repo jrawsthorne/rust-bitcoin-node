@@ -2,7 +2,7 @@ use bitcoin::{util::uint::Uint256, BitcoinHash, Block, BlockHash, BlockHeader, T
 
 /// An entry in the blockchain.
 /// Essentially a block header with its height in the blockchain specified
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Copy)]
 pub struct ChainEntry {
     pub hash: BlockHash,
     pub version: u32,
