@@ -1,4 +1,5 @@
 use super::NetworkParams;
+use bitcoin::util::uint::Uint256;
 
 /// 1 Bitcoin is 100 million satoshis
 pub const COIN: u64 = 100_000_000;
@@ -11,6 +12,15 @@ pub const COINBASE_MATURITY: u32 = 100;
 /// Threshold for nLockTime: below this value it is interpreted as block number,
 /// otherwise as UNIX timestamp.
 pub const LOCKTIME_THRESHOLD: u32 = 500_000_000;
+pub const WITNESS_SCALE_FACTOR: usize = 4;
+pub const MAX_BLOCK_SIGOPS_COST: usize = 80000;
+/// The maximum number of public keys per multisig
+pub const MAX_PUBKEYS_PER_MULTISIG: usize = 20;
+/// P2WPKH sighash
+pub const WITNESS_V0_KEYHASH_SIZE: usize = 20;
+/// P2WSH sighash
+pub const WITNESS_V0_SCRIPTHASH_SIZE: usize = 32;
+pub const MEDIAN_TIMESPAN: usize = 11;
 
 /// Get the correct miner subsidy for a block at a certain height
 /// On the main bitcoin network this halves the subsidy every 210,000 blocks (~4 years)
@@ -22,6 +32,28 @@ pub fn get_block_subsidy(height: u32, network_params: &NetworkParams) -> u64 {
     }
 
     BASE_REWARD >> halvings
+}
+
+pub fn compact_to_target(bits: u32) -> Uint256 {
+    // This is a floating-point "compact" encoding originally used by
+    // OpenSSL, which satoshi put into consensus code, so we're stuck
+    // with it. The exponent needs to have 3 subtracted from it, hence
+    // this goofy decoding code:
+    let (mant, expt) = {
+        let unshifted_expt = bits >> 24;
+        if unshifted_expt <= 3 {
+            ((bits & 0xFFFFFF) >> (8 * (3 - unshifted_expt as usize)), 0)
+        } else {
+            (bits & 0xFFFFFF, 8 * ((bits >> 24) - 3))
+        }
+    };
+
+    // The mantissa is signed but may not be negative
+    if mant > 0x7FFFFF {
+        Default::default()
+    } else {
+        Uint256::from_u64(mant as u64).unwrap() << (expt as usize)
+    }
 }
 
 #[cfg(test)]
