@@ -1,6 +1,9 @@
 use super::connection::{Connection, ConnectionListener, ConnectionMessage};
 use crate::util::EmptyResult;
-use bitcoin::network::message::NetworkMessage;
+use bitcoin::{
+    network::{message::NetworkMessage, message_blockdata::GetHeadersMessage},
+    BlockHash,
+};
 use failure::Error;
 use log::trace;
 use std::net::SocketAddr;
@@ -33,21 +36,28 @@ pub struct Peer {
     listener: Option<Arc<dyn PeerListener>>,
     pub addr: SocketAddr,
     connection_tx: Mutex<mpsc::Sender<ConnectionMessage>>,
+    pub id: PeerId,
 }
 
 impl Peer {
-    pub fn from_outbound(addr: SocketAddr, listener: Option<Arc<dyn PeerListener>>) -> Arc<Self> {
+    pub fn from_outbound(
+        id: PeerId,
+        addr: SocketAddr,
+        listener: Option<Arc<dyn PeerListener>>,
+    ) -> Arc<Self> {
         let (connection_tx, connection_rx) = mpsc::channel(1);
         let peer = Arc::new(Self {
             addr,
             connection_tx: Mutex::new(connection_tx),
             listener,
+            id,
         });
         Connection::from_outbound(peer.clone(), connection_rx);
         peer
     }
 
     pub fn from_inbound(
+        id: PeerId,
         addr: SocketAddr,
         stream: TcpStream,
         listener: Option<Arc<dyn PeerListener>>,
@@ -57,6 +67,7 @@ impl Peer {
             addr,
             connection_tx: Mutex::new(connection_tx),
             listener,
+            id,
         });
         Connection::from_inbound(peer.clone(), stream, connection_rx);
         peer
@@ -71,7 +82,7 @@ impl Peer {
 
         let version = VersionMessage {
             version: PROTOCOL_VERSION,
-            services: ServiceFlags::NONE,
+            services: ServiceFlags::NETWORK | ServiceFlags::WITNESS,
             timestamp: now() as i64,
             receiver: Address::new(&self.addr, ServiceFlags::NONE),
             sender: Address::new(
@@ -95,6 +106,13 @@ impl Peer {
             .await?;
         trace!("sent {} packet to {}", command, self.addr);
         Ok(())
+    }
+
+    pub async fn send_get_headers(&self, locator: Vec<BlockHash>, stop: BlockHash) -> EmptyResult {
+        self.send(NetworkMessage::GetHeaders(GetHeadersMessage::new(
+            locator, stop,
+        )))
+        .await
     }
 
     async fn destroy(&self) {
@@ -137,6 +155,12 @@ impl ConnectionListener for Peer {
         let res = match &packet {
             NetworkMessage::Version(_) => self.send(NetworkMessage::Verack).await,
             NetworkMessage::Ping(nonce) => self.send(NetworkMessage::Pong(*nonce)).await,
+            NetworkMessage::Verack => {
+                if let Some(listener) = &self.listener {
+                    listener.handle_open(self).await;
+                }
+                Ok(())
+            }
             _ => Ok(()),
         };
         if let Err(error) = res {
