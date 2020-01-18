@@ -85,7 +85,7 @@ impl TransactionVerifier for Transaction {
             bail!("bad-txns-fee-outofrange");
         }
 
-        Ok(total)
+        Ok(fee)
     }
 
     // Does not check overflows, must be done separately
