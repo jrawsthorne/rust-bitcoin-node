@@ -1,5 +1,6 @@
 mod codec;
 mod connection;
+mod mempool;
 mod p2p;
 mod peer;
 
