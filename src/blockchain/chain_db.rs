@@ -215,16 +215,53 @@ impl ChainDB {
     }
 
     pub fn get_entry_by_hash(&mut self, hash: BlockHash) -> Result<Option<&ChainEntry>, Error> {
-        Ok(match self.entry_cache.hash.entry(hash) {
+        Self::entry_by_hash(&mut self.entry_cache.hash, &self.db, hash)
+    }
+
+    pub fn entry_by_hash<'a>(
+        cache: &'a mut HashMap<BlockHash, ChainEntry>,
+        db: &'a DiskDatabase,
+        hash: BlockHash,
+    ) -> Result<Option<&'a ChainEntry>, Error> {
+        Ok(match cache.entry(hash) {
             Entry::Occupied(entry) => Some(entry.into_mut()),
             Entry::Vacant(entry) => {
-                if let Some(chain_entry) = self.db.get(Key::ChainEntry(hash))? {
+                if let Some(chain_entry) = db.get(Key::ChainEntry(hash))? {
                     Some(entry.insert(chain_entry))
                 } else {
                     None
                 }
             }
         })
+    }
+
+    pub fn entry_by_height<'a>(
+        height_cache: &'a mut HashMap<u32, ChainEntry>,
+        hash_cache: &'a mut HashMap<BlockHash, ChainEntry>,
+        db: &'a DiskDatabase,
+        height: u32,
+    ) -> Result<Option<&'a ChainEntry>, Error> {
+        Ok(match height_cache.entry(height) {
+            Entry::Occupied(entry) => Some(entry.into_mut()),
+            Entry::Vacant(entry) => {
+                if let Some(hash) = db.get(Key::ChainEntryHash(height))? {
+                    if let Some(chain_entry) = Self::entry_by_hash(hash_cache, db, hash)? {
+                        entry.insert(*chain_entry);
+                        return Ok(Some(chain_entry));
+                    }
+                }
+                None
+            }
+        })
+    }
+
+    pub fn get_entry_by_height(&mut self, height: u32) -> Result<Option<&ChainEntry>, Error> {
+        Self::entry_by_height(
+            &mut self.entry_cache.height,
+            &mut self.entry_cache.hash,
+            &self.db,
+            height,
+        )
     }
 
     pub fn read_coin(&mut self, prevout: &OutPoint) -> Result<Option<&CoinEntry>, Error> {
@@ -367,6 +404,51 @@ impl ChainDB {
             }
         }
         Ok(())
+    }
+
+    // TODO: Lifetimes return shared ref
+    pub fn get_ancestor<'a>(
+        &mut self,
+        entry: &ChainEntry,
+        height: u32,
+    ) -> Result<Option<ChainEntry>, Error> {
+        assert!(height <= entry.height);
+
+        if self.is_main_chain(entry)? {
+            return Ok(self.get_entry_by_height(height)?.copied());
+        }
+
+        let mut entry = *entry;
+
+        while entry.height != height {
+            entry = *self.get_entry_by_hash(entry.prev_block)?.unwrap();
+        }
+
+        Ok(Some(entry))
+    }
+
+    fn is_main_chain(&self, entry: &ChainEntry) -> Result<bool, Error> {
+        if entry.is_genesis() {
+            return Ok(true);
+        }
+
+        if entry.hash == self.state.tip {
+            return Ok(true);
+        }
+
+        if let Some(cache) = self.entry_cache.height.get(&entry.height) {
+            return Ok(cache.height == entry.height);
+        }
+
+        if self.get_next_hash(entry.hash)?.is_some() {
+            return Ok(true);
+        }
+
+        Ok(false)
+    }
+
+    fn get_next_hash(&self, hash: BlockHash) -> Result<Option<BlockHash>, Error> {
+        self.db.get(Key::ChainNextHash(hash))
     }
 }
 
