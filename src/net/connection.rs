@@ -1,8 +1,8 @@
 use super::{codec::BitcoinCodec, Peer};
-use bitcoin::network::message::NetworkMessage;
+use bitcoin::{network::message::NetworkMessage, Network};
 use failure::{format_err, Error};
-use futures::future::select;
-use futures_util::{SinkExt, StreamExt};
+use futures::StreamExt;
+use futures_util::SinkExt;
 use std::net::Shutdown;
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,22 +19,21 @@ pub trait ConnectionListener: Send + Sync + 'static {
     async fn handle_error(&self, error: &Error);
 }
 
-#[derive(Debug)]
-pub enum ConnectionMessage {
-    Broadcast(NetworkMessage),
-    Close,
-}
-
 pub struct Connection;
 
 impl Connection {
-    pub fn from_outbound(peer: Arc<Peer>, rx: mpsc::Receiver<ConnectionMessage>) -> JoinHandle<()> {
+    pub fn from_outbound(
+        network: Network,
+        peer: Arc<Peer>,
+        rx: mpsc::UnboundedReceiver<NetworkMessage>,
+        close_connection_rx: mpsc::UnboundedReceiver<()>,
+    ) -> JoinHandle<()> {
         tokio::spawn(async move {
             match tokio::time::timeout(Duration::from_secs(10), TcpStream::connect(peer.addr)).await
             {
                 Ok(Ok(stream)) => {
                     peer.handle_connect().await;
-                    Connection::run(peer, rx, stream).await;
+                    Connection::run(network, peer, rx, stream, close_connection_rx).await;
                 }
                 Ok(Err(error)) => {
                     let error = format_err!("connection error: {}", error);
@@ -49,32 +48,32 @@ impl Connection {
     }
 
     pub fn from_inbound(
+        network: Network,
         peer: Arc<Peer>,
         stream: TcpStream,
-        rx: mpsc::Receiver<ConnectionMessage>,
+        rx: mpsc::UnboundedReceiver<NetworkMessage>,
+        close_connection_rx: mpsc::UnboundedReceiver<()>,
     ) -> JoinHandle<()> {
         tokio::spawn(async move {
-            Connection::run(peer, rx, stream).await;
+            Connection::run(network, peer, rx, stream, close_connection_rx).await;
         })
     }
 
-    async fn run(peer: Arc<Peer>, mut rx: mpsc::Receiver<ConnectionMessage>, stream: TcpStream) {
-        let stream = Framed::new(stream, BitcoinCodec::default());
+    async fn run(
+        network: Network,
+        peer: Arc<Peer>,
+        mut rx: mpsc::UnboundedReceiver<NetworkMessage>,
+        stream: TcpStream,
+        mut close_connection_rx: mpsc::UnboundedReceiver<()>,
+    ) {
+        let stream = Framed::new(stream, BitcoinCodec::new(network));
         let (mut w, mut r) = stream.split();
 
         let recv_message = async {
             while let Some(message) = rx.recv().await {
-                match message {
-                    ConnectionMessage::Broadcast(message) => {
-                        if let Err(error) = w.send(message).await {
-                            peer.handle_error(&error.into()).await;
-                            break;
-                        }
-                    }
-                    ConnectionMessage::Close => {
-                        // TODO: use separate channel to stop a blocked write from preventing close
-                        break;
-                    }
+                if let Err(error) = w.send(message).await {
+                    peer.handle_error(&error.into()).await;
+                    break;
                 }
             }
         };
@@ -93,7 +92,15 @@ impl Connection {
             peer.handle_close().await;
         };
 
-        select(Box::pin(recv_message), Box::pin(recv_socket)).await;
+        let recv_close = async {
+            close_connection_rx.next().await;
+        };
+
+        tokio::select! {
+            _ = recv_message => (),
+            _ = recv_socket => (),
+            _ = recv_close => ()
+        };
 
         // shutdown stream cleanly ignoring error
         // rx will be closed on drop
