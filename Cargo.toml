@@ -18,6 +18,8 @@ rocksdb = "0.13"
 async-trait = "0.1"
 bitcoinconsensus = "0.19.0-1 "
 regex = "1"
+chrono = "0.4"
+bitflags = "1"
 
 [dev-dependencies]
 tempfile = "3"
