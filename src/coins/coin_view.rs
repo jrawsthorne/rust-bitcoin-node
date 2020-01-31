@@ -1,7 +1,7 @@
-use super::{CoinEntry, Coins};
+use super::CoinEntry;
 use crate::blockchain::ChainDB;
 use crate::util::EmptyResult;
-use bitcoin::{OutPoint, Transaction, TxOut, Txid};
+use bitcoin::{OutPoint, Transaction, TxOut};
 use failure::{bail, Error};
 use std::collections::{hash_map::Entry, HashMap};
 
@@ -9,69 +9,54 @@ use std::collections::{hash_map::Entry, HashMap};
 #[derive(Debug, Clone, Default)]
 pub struct CoinView {
     /// A map of transaction ID to coins
-    pub map: HashMap<Txid, Coins>,
+    pub map: HashMap<OutPoint, CoinEntry>,
 }
 
 impl CoinView {
-    /// Get a reference to the coins for a transaction ID
-    pub fn get(&self, hash: Txid) -> Option<&Coins> {
-        self.map.get(&hash)
-    }
-
-    /// Get a mutable reference to the coins for a transaction ID
-    pub fn get_mut(&mut self, hash: Txid) -> Option<&mut Coins> {
-        self.map.get_mut(&hash)
-    }
-
-    /// Add the coins for a transaction ID
-    pub fn add(&mut self, hash: Txid, coins: Coins) {
-        self.map.insert(hash, coins);
-    }
-
-    /// Get the coins for a transaction ID or create an empty set
-    pub fn ensure(&mut self, hash: Txid) -> &mut Coins {
-        self.map.entry(hash).or_default()
-    }
-
     /// Add a new transaction to the view
     pub fn add_tx(&mut self, tx: &Transaction, height: u32) {
-        let hash = tx.txid();
-        let coins = Coins::from_tx(tx, height);
-        self.add(hash, coins)
+        let txid = tx.txid();
+        tx.output
+            .iter()
+            .enumerate()
+            .filter_map(|(index, output)| {
+                if output.script_pubkey.is_provably_unspendable() {
+                    None
+                } else {
+                    Some(index)
+                }
+            })
+            .for_each(|index| {
+                let entry = CoinEntry::from_tx(tx, index as u32, height);
+                self.map.insert(
+                    OutPoint {
+                        vout: index as u32,
+                        txid,
+                    },
+                    entry,
+                );
+            })
     }
 
     pub fn get_output(&self, prevout: &OutPoint) -> Option<&TxOut> {
-        let coins = self.get(prevout.txid)?;
-        coins.get_output(prevout.vout)
+        self.map.get(prevout).and_then(|coin| Some(&coin.output))
     }
 
     pub fn get_entry(&self, prevout: &OutPoint) -> Option<&CoinEntry> {
-        let coins = self.get(prevout.txid)?;
-        coins.get(prevout.vout)
+        self.map.get(prevout)
     }
 
     /// Get a coin from the coin view or from the database if it exists
     pub fn read_coin(
         &mut self,
         db: &mut ChainDB,
-        prevout: &OutPoint,
+        prevout: OutPoint,
     ) -> Result<Option<&mut CoinEntry>, Error> {
-        Ok(match self.map.entry(prevout.txid) {
-            Entry::Occupied(entry) => match entry.into_mut().outputs.entry(prevout.vout) {
-                Entry::Occupied(entry) => Some(entry.into_mut()),
-                Entry::Vacant(entry) => match db.read_coin(prevout)? {
-                    Some(coin) => Some(entry.insert(coin.clone())),
-                    None => None,
-                },
-            },
-            Entry::Vacant(entry) => match db.read_coin(prevout)? {
-                Some(coin) => {
-                    let mut coins = Coins::default();
-                    coins.add(prevout.vout, coin.clone());
-                    entry.insert(coins).get_mut(prevout.vout)
-                }
-                None => None,
-            },
+        Ok(match self.map.entry(prevout) {
+            Entry::Occupied(entry) => Some(entry.into_mut()),
+            Entry::Vacant(entry) => db
+                .read_coin(prevout)?
+                .and_then(|coin| Some(entry.insert(coin.clone()))),
         })
     }
 
@@ -79,7 +64,7 @@ impl CoinView {
     /// and ensure that the output exists and was not spent in a previous input
     pub fn spend_inputs(&mut self, db: &mut ChainDB, tx: &Transaction) -> EmptyResult {
         for input in &tx.input {
-            let coin = self.read_coin(db, &input.previous_output)?;
+            let coin = self.read_coin(db, input.previous_output)?;
             match coin {
                 Some(coin) => {
                     if coin.spent {
