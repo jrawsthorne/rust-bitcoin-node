@@ -2,6 +2,8 @@
 
 /// Block verification
 pub mod blockchain;
+/// Flat file block storage
+pub mod blockstore;
 /// Utilities for wokring with coins (UTXO set)
 pub mod coins;
 /// Store blockchain state
