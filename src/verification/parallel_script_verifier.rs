@@ -114,10 +114,12 @@ impl CheckQueue {
             }
             state.todo += checks_len;
         }
-        if checks_len == 1 {
-            self.cond_worker.notify_one();
-        } else if checks_len > 1 {
-            self.cond_worker.notify_all();
+
+        use std::cmp::Ordering::*;
+        match checks_len.cmp(&1) {
+            Greater => self.cond_worker.notify_all(),
+            Equal => self.cond_worker.notify_one(),
+            Less => (),
         }
     }
 }

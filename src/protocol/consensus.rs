@@ -12,7 +12,6 @@ pub const COINBASE_MATURITY: u32 = 100;
 /// Threshold for nLockTime: below this value it is interpreted as block number,
 /// otherwise as UNIX timestamp.
 pub const LOCKTIME_THRESHOLD: u32 = 500_000_000;
-pub const WITNESS_SCALE_FACTOR: usize = 4;
 pub const MAX_BLOCK_SIGOPS_COST: usize = 80000;
 /// The maximum number of public keys per multisig
 pub const MAX_PUBKEYS_PER_MULTISIG: usize = 20;
@@ -21,6 +20,58 @@ pub const WITNESS_V0_KEYHASH_SIZE: usize = 20;
 /// P2WSH sighash
 pub const WITNESS_V0_SCRIPTHASH_SIZE: usize = 32;
 pub const MEDIAN_TIMESPAN: usize = 11;
+pub const MAX_BLOCK_SIZE: usize = 1_000_000;
+pub const MAX_FUTURE_BLOCK_TIME: u32 = 2 * 60 * 60;
+
+bitflags::bitflags! {
+    pub struct ScriptFlags: u32 {
+        const VERIFY_NONE = 0;
+        const VERIFY_P2SH = 1 << 0;
+        const VERIFY_STRICTENC = 1 << 1;
+        const VERIFY_DERSIG = 1 << 2;
+        const VERIFY_LOW_S = 1 << 3;
+        const VERIFY_NULLDUMMY = 1 << 4;
+        const VERIFY_SIGPUSHONLY = 1 << 5;
+        const VERIFY_MINIMALDATA = 1 << 6;
+        const VERIFY_DISCOURAGE_UPGRADABLE_NOPS = 1 << 7;
+        const VERIFY_CLEANSTACK = 1 << 8;
+        const VERIFY_CHECKLOCKTIMEVERIFY = 1 << 9;
+        const VERIFY_CHECKSEQUENCEVERIFY = 1 << 10;
+        const VERIFY_WITNESS = 1 << 11;
+        const VERIFY_DISCOURAGE_UPGRADABLE_WITNESS_PROGRAM = 1 << 12;
+        const VERIFY_MINIMALIF = 1 << 13;
+        const VERIFY_NULLFAIL = 1 << 14;
+        const VERIFY_WITNESS_PUBKEYTYPE = 1 << 15;
+        const VERIFY_CONST_SCRIPTCODE = 1 << 16;
+        // NOT YET STANDARD
+        const VERIFY_TAPROOT = 1 << 17;
+        const VERIFY_DISCOURAGE_UPGRADABLE_TAPROOT_VERSION = 1 << 18;
+        const VERIFY_DISCOURAGE_UNKNOWN_ANNEX = 1 << 19;
+        const VERIFY_DISCOURAGE_OP_SUCCESS = 1 << 20;
+        const VERIFY_DISCOURAGE_UPGRADABLE_PUBKEYTYPE = 1 << 21;
+        const VERIFY_STANDARD_TEMPLATE = 1 << 22;
+    }
+}
+
+impl Default for ScriptFlags {
+    fn default() -> Self {
+        Self::VERIFY_NONE
+    }
+}
+
+bitflags::bitflags! {
+    pub struct LockFlags: u32 {
+        const NONE = 0;
+        const VERIFY_SEQUENCE = 1 << 0;
+        const MEDIAN_TIME_PAST = 1 << 1;
+    }
+}
+
+impl Default for LockFlags {
+    fn default() -> Self {
+        Self::NONE
+    }
+}
 
 /// Get the correct miner subsidy for a block at a certain height
 /// On the main bitcoin network this halves the subsidy every 210,000 blocks (~4 years)
@@ -102,8 +153,8 @@ mod test {
         for height in (0..14_000_000).step_by(1000) {
             let subsidy = get_block_subsidy(height, &network_params);
             assert!(subsidy <= BASE_REWARD);
-            sum += subsidy * 1000;
-            assert!(sum >= 0 && sum <= MAX_MONEY); // TODO: change value to be negative
+            sum += subsidy.checked_mul(1000).unwrap();
+            assert!(sum <= MAX_MONEY);
         }
         assert_eq!(sum, 2_099_999_997_690_000); // Max Bitcoin money supply if all subsidies were claimed (they haven't been)
     }

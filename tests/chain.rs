@@ -6,27 +6,27 @@ use rust_bitcoin_node::{
 use std::path::PathBuf;
 use tempfile::TempDir;
 
-fn chain(path: PathBuf) -> Chain {
+async fn chain(path: PathBuf) -> Chain {
     let network_params = NetworkParams::from_network(bitcoin::Network::Regtest);
     let mut chain = Chain::new(ChainOptions {
         network: network_params,
         path,
     });
-    chain.open().unwrap();
+    chain.open().await.unwrap();
     chain
 }
 
-#[test]
-fn mine_200_blocks() {
+#[tokio::test]
+async fn mine_200_blocks() {
     let tmp_dir = TempDir::new().unwrap();
-    let mut chain = chain(tmp_dir.path().into());
+    let mut chain = chain(tmp_dir.path().into()).await;
     let miner = Miner::new();
 
     for _ in 0..200 {
-        let tip = chain.tip.clone();
+        let tip = chain.tip;
         let block_template = miner.create_block(tip, None);
         let block = Miner::mine_block(block_template);
-        assert!(chain.add(&block).unwrap().is_some());
+        assert!(chain.add(block).await.unwrap().is_some());
     }
 
     assert_eq!(chain.height, 200);

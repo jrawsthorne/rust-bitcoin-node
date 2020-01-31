@@ -12,6 +12,8 @@ pub trait BlockVerifier {
     fn check_body(&self) -> EmptyResult;
     fn get_weight(&self) -> usize;
     fn check_coinbase_height(&self, height: u32) -> EmptyResult;
+    fn has_witness(&self) -> bool;
+    fn get_size(&self) -> usize;
 }
 
 impl BlockVerifier for Block {
@@ -31,6 +33,7 @@ impl BlockVerifier for Block {
 
     fn check_body(&self) -> EmptyResult {
         // Check the merkle root.
+        // TODO: check mutated
         ensure!(self.check_merkle_root(), "bad-txnmrklroot");
 
         // Size limits
@@ -40,7 +43,10 @@ impl BlockVerifier for Block {
             self.txdata.len() * WITNESS_SCALE_FACTOR <= MAX_BLOCK_WEIGHT as usize,
             "bad-blk-length"
         );
-        // TODO: size without witness * WITNESS_SCALE_FACTOR > MAX_BLOCK_WEIGHT as usize
+        ensure!(
+            self.get_size() * WITNESS_SCALE_FACTOR <= MAX_BLOCK_WEIGHT as usize,
+            "bad-blk-length"
+        );
 
         // First transaction must be coinbase
         ensure!(self.txdata[0].is_coin_base(), "bad-cb-missing");
@@ -95,5 +101,25 @@ impl BlockVerifier for Block {
         } else {
             bail!("bad-cb-height")
         }
+    }
+
+    fn has_witness(&self) -> bool {
+        for tx in &self.txdata {
+            if tx.has_witness() {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn get_size(&self) -> usize {
+        let header = 80;
+        let tx_len = VarInt(self.txdata.len() as u64).len();
+        let tx = self
+            .txdata
+            .iter()
+            .fold(0, |total, tx| total + tx.get_size());
+
+        header + tx_len + tx
     }
 }
