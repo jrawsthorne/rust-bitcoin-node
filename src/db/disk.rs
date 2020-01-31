@@ -1,7 +1,8 @@
 use super::{batch::Operation, Batch, DBValue, Database, Key};
 use crate::util::EmptyResult;
 use failure::{err_msg, Error};
-use rocksdb::{ColumnFamily, Options, WriteBatch, DB};
+use rocksdb::{ColumnFamily, DBIterator, Direction, IteratorMode, Options, WriteBatch, DB};
+use std::marker::PhantomData;
 
 pub const COL_CHAIN_ENTRY: &str = "0";
 pub const COL_CHAIN_ENTRY_HEIGHT: &str = "1";
@@ -9,17 +10,31 @@ pub const COL_CHAIN_ENTRY_HASH: &str = "2";
 pub const COL_COIN: &str = "3";
 pub const COL_NEXT_HASH: &str = "4";
 pub const COL_MISC: &str = "5";
+pub const COL_CHAIN_WORK: &str = "6";
+pub const COL_CHAIN_NEXT_HASHES: &str = "7";
+pub const COL_CHAIN_SKIP: &str = "8";
+pub const COL_BLOCKSTORE_FILE: &str = "9";
+pub const COL_BLOCKSTORE_LAST_FILE: &str = "10";
+pub const COL_BLOCKSTORE_BLOCK_RECORD: &str = "11";
+pub const COL_VERSION_BIT_STATE: &str = "12";
 
 pub const KEY_TIP: [u8; 1] = [0];
 pub const KEY_CHAIN_STATE: [u8; 1] = [1];
 
-pub const COLUMNS: [&str; 6] = [
+pub const COLUMNS: [&str; 13] = [
     COL_CHAIN_ENTRY,
     COL_CHAIN_ENTRY_HEIGHT,
     COL_CHAIN_ENTRY_HASH,
     COL_COIN,
     COL_NEXT_HASH,
     COL_MISC,
+    COL_CHAIN_WORK,
+    COL_CHAIN_NEXT_HASHES,
+    COL_CHAIN_SKIP,
+    COL_BLOCKSTORE_FILE,
+    COL_BLOCKSTORE_LAST_FILE,
+    COL_BLOCKSTORE_BLOCK_RECORD,
+    COL_VERSION_BIT_STATE,
 ];
 
 pub struct DiskDatabase {
@@ -27,6 +42,35 @@ pub struct DiskDatabase {
 }
 
 use std::path::PathBuf;
+
+pub struct Iter<'a, V: DBValue> {
+    iter: DBIterator<'a>,
+    v: PhantomData<V>,
+}
+
+impl<'a, V: DBValue> Iterator for Iter<'a, V> {
+    type Item = (Box<[u8]>, V);
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(next) = self.iter.next() {
+            let value = V::decode(&next.1);
+            if let Ok(value) = value {
+                return Some((next.0, value));
+            }
+        }
+        None
+    }
+}
+
+pub enum IterMode {
+    Start,
+    End,
+    From(Key, IterDirection),
+}
+
+pub enum IterDirection {
+    Forward,
+    Reverse,
+}
 
 impl DiskDatabase {
     pub fn new(path: PathBuf) -> Self {
@@ -41,6 +85,35 @@ impl DiskDatabase {
 
     fn col(&self, col: &'static str) -> Result<&ColumnFamily, Error> {
         self.db.cf_handle(col).ok_or_else(|| err_msg("bad column"))
+    }
+
+    pub fn iter_cf<V: DBValue>(&self, col: &'static str, mode: IterMode) -> Result<Iter<V>, Error> {
+        let col = self.col(col)?;
+
+        let from_key = if let IterMode::From(key, _) = &mode {
+            Some(key.encode()?)
+        } else {
+            None
+        };
+
+        let mode = match mode {
+            IterMode::End => IteratorMode::End,
+            IterMode::Start => IteratorMode::Start,
+            IterMode::From(_, direction) => {
+                let direction = match direction {
+                    IterDirection::Forward => Direction::Forward,
+                    IterDirection::Reverse => Direction::Reverse,
+                };
+                IteratorMode::From(from_key.as_ref().unwrap(), direction)
+            }
+        };
+
+        let iter = self.db.iterator_cf(col, mode)?;
+
+        Ok(Iter {
+            iter,
+            v: PhantomData,
+        })
     }
 }
 
@@ -59,7 +132,7 @@ impl Database for DiskDatabase {
 
     fn get<V: DBValue>(&self, key: Key) -> Result<Option<V>, Error> {
         let col = self.col(key.col())?;
-        let raw = self.db.get_cf(col, key.encode()?)?;
+        let raw = self.db.get_pinned_cf(col, key.encode()?)?;
         Ok(match raw {
             Some(raw) => Some(V::decode(&raw)?),
             None => None,
@@ -82,5 +155,11 @@ impl Database for DiskDatabase {
         }
         self.db.write(write_batch)?;
         Ok(())
+    }
+
+    fn has(&self, key: Key) -> Result<bool, Error> {
+        let col = self.col(key.col())?;
+        let value = self.db.get_cf(col, key.encode()?)?;
+        Ok(value.is_some())
     }
 }

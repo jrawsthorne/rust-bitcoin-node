@@ -1,5 +1,7 @@
 use crate::blockchain::{ChainEntry, ChainState};
+use crate::blockstore::{BlockRecord, FileRecord};
 use crate::coins::CoinEntry;
+use crate::protocol::ThresholdState;
 use bitcoin::{
     consensus::{Decodable, Encodable},
     util::uint::Uint256,
@@ -18,6 +20,7 @@ impl<T: Decodable + Encodable> DBValue for T {
         let decoder = Cursor::new(bytes);
         Ok(T::consensus_decode(decoder)?)
     }
+
     fn encode(&self) -> Result<Vec<u8>, Error> {
         let mut encoder = Cursor::new(Vec::new());
         T::consensus_encode(self, &mut encoder)?;
@@ -25,21 +28,54 @@ impl<T: Decodable + Encodable> DBValue for T {
     }
 }
 
+impl DBValue for ThresholdState {
+    fn decode(bytes: &[u8]) -> Result<Self, Error> {
+        Ok(match bytes[0] {
+            0 => ThresholdState::Defined,
+            1 => ThresholdState::Started,
+            2 => ThresholdState::LockedIn,
+            3 => ThresholdState::Active,
+            4 => ThresholdState::Failed,
+            _ => failure::bail!("bad state"),
+        })
+    }
+
+    fn encode(&self) -> Result<Vec<u8>, Error> {
+        Ok(vec![match self {
+            ThresholdState::Defined => 0,
+            ThresholdState::Started => 1,
+            ThresholdState::LockedIn => 2,
+            ThresholdState::Active => 3,
+            ThresholdState::Failed => 4,
+        }])
+    }
+}
+
 impl DBValue for ChainEntry {
     fn decode(bytes: &[u8]) -> Result<Self, Error> {
         let mut decoder = Cursor::new(bytes);
-        let mut entry = ChainEntry::default();
-        entry.hash = BlockHash::consensus_decode(&mut decoder)?;
-        entry.version = u32::consensus_decode(&mut decoder)?;
-        entry.prev_block = BlockHash::consensus_decode(&mut decoder)?;
-        entry.merkle_root = TxMerkleNode::consensus_decode(&mut decoder)?;
-        entry.time = u32::consensus_decode(&mut decoder)?;
-        entry.bits = u32::consensus_decode(&mut decoder)?;
-        entry.nonce = u32::consensus_decode(&mut decoder)?;
-        entry.height = u32::consensus_decode(&mut decoder)?;
-        entry.chainwork = Uint256::consensus_decode(&mut decoder)?;
-        Ok(entry)
+        let hash = BlockHash::consensus_decode(&mut decoder)?;
+        let version = u32::consensus_decode(&mut decoder)?;
+        let prev_block = BlockHash::consensus_decode(&mut decoder)?;
+        let merkle_root = TxMerkleNode::consensus_decode(&mut decoder)?;
+        let time = u32::consensus_decode(&mut decoder)?;
+        let bits = u32::consensus_decode(&mut decoder)?;
+        let nonce = u32::consensus_decode(&mut decoder)?;
+        let height = u32::consensus_decode(&mut decoder)?;
+        let chainwork = Uint256::consensus_decode(&mut decoder)?;
+        Ok(ChainEntry {
+            hash,
+            version,
+            prev_block,
+            merkle_root,
+            time,
+            bits,
+            nonce,
+            height,
+            chainwork,
+        })
     }
+
     fn encode(&self) -> Result<Vec<u8>, Error> {
         let mut encoder = Cursor::new(Vec::with_capacity(148));
         self.hash.consensus_encode(&mut encoder)?;
@@ -61,19 +97,27 @@ pub static MAX_HEIGHT: u32 = u32::max_value();
 impl DBValue for CoinEntry {
     fn decode(bytes: &[u8]) -> Result<Self, Error> {
         let mut decoder = Cursor::new(bytes);
-        let mut entry = CoinEntry::default();
-        entry.version = u32::consensus_decode(&mut decoder)?;
-        entry.height = match u32::consensus_decode(&mut decoder)? {
+        let version = u32::consensus_decode(&mut decoder)?;
+        let height = match u32::consensus_decode(&mut decoder)? {
             height if height == MAX_HEIGHT => None,
             height => Some(height),
         };
-        entry.coinbase = bool::consensus_decode(&mut decoder)?;
-        entry.output = TxOut::consensus_decode(&mut decoder)?;
-        entry.spent = bool::consensus_decode(&mut decoder)?;
-        Ok(entry)
+        let coinbase = bool::consensus_decode(&mut decoder)?;
+        let output = TxOut::consensus_decode(&mut decoder)?;
+        let spent = bool::consensus_decode(&mut decoder)?;
+        Ok(CoinEntry {
+            version,
+            height,
+            coinbase,
+            output,
+            spent,
+        })
     }
+
     fn encode(&self) -> Result<Vec<u8>, Error> {
-        let mut encoder = Cursor::new(Vec::new());
+        // version + height + coinbase + output value + output script + spent
+        let len = 4 + 4 + 1 + 8 + self.output.script_pubkey.len() + 1;
+        let mut encoder = Cursor::new(Vec::with_capacity(len));
         self.version.consensus_encode(&mut encoder)?;
         match self.height {
             Some(height) => height.consensus_encode(&mut encoder)?,
@@ -89,19 +133,70 @@ impl DBValue for CoinEntry {
 impl DBValue for ChainState {
     fn decode(bytes: &[u8]) -> Result<Self, Error> {
         let mut decoder = Cursor::new(bytes);
-        let mut state = ChainState::default();
-        state.tip = BlockHash::consensus_decode(&mut decoder)?;
-        state.tx = u32::consensus_decode(&mut decoder)? as usize;
-        state.coin = u32::consensus_decode(&mut decoder)? as usize;
-        state.value = u64::consensus_decode(&mut decoder)?;
-        Ok(state)
+        let tip = BlockHash::consensus_decode(&mut decoder)?;
+        let tx = u64::consensus_decode(&mut decoder)?;
+        let coin = u64::consensus_decode(&mut decoder)?;
+        let value = u64::consensus_decode(&mut decoder)?;
+        Ok(ChainState {
+            tip,
+            tx,
+            coin,
+            value,
+            commited: false,
+        })
     }
+
     fn encode(&self) -> Result<Vec<u8>, Error> {
-        let mut encoder = Cursor::new(Vec::new());
+        // length = tip + tx + coin + value
+        let mut encoder = Cursor::new(Vec::with_capacity(32 + 8 + 8 + 8));
         self.tip.consensus_encode(&mut encoder)?;
-        (self.tx as u32).consensus_encode(&mut encoder)?;
-        (self.coin as u32).consensus_encode(&mut encoder)?;
+        self.tx.consensus_encode(&mut encoder)?;
+        self.coin.consensus_encode(&mut encoder)?;
         self.value.consensus_encode(&mut encoder)?;
+        Ok(encoder.into_inner())
+    }
+}
+
+impl DBValue for FileRecord {
+    fn decode(bytes: &[u8]) -> Result<Self, Error> {
+        let mut decoder = Cursor::new(bytes);
+        let blocks = u32::consensus_decode(&mut decoder)?;
+        let used = u32::consensus_decode(&mut decoder)?;
+        let length = u32::consensus_decode(&mut decoder)?;
+        Ok(FileRecord {
+            blocks,
+            used,
+            length,
+        })
+    }
+
+    fn encode(&self) -> Result<Vec<u8>, Error> {
+        let mut encoder = Cursor::new(Vec::with_capacity(12));
+        self.blocks.consensus_encode(&mut encoder)?;
+        self.used.consensus_encode(&mut encoder)?;
+        self.length.consensus_encode(&mut encoder)?;
+        Ok(encoder.into_inner())
+    }
+}
+
+impl DBValue for BlockRecord {
+    fn decode(bytes: &[u8]) -> Result<Self, Error> {
+        let mut decoder = Cursor::new(bytes);
+        let file = u32::consensus_decode(&mut decoder)?;
+        let position = u32::consensus_decode(&mut decoder)?;
+        let length = u32::consensus_decode(&mut decoder)?;
+        Ok(BlockRecord {
+            file,
+            position,
+            length,
+        })
+    }
+
+    fn encode(&self) -> Result<Vec<u8>, Error> {
+        let mut encoder = Cursor::new(Vec::with_capacity(12));
+        self.file.consensus_encode(&mut encoder)?;
+        self.position.consensus_encode(&mut encoder)?;
+        self.length.consensus_encode(&mut encoder)?;
         Ok(encoder.into_inner())
     }
 }
