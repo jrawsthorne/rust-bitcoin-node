@@ -588,13 +588,33 @@ impl Chain {
             return Ok((view, state));
         }
 
-        // TODO: verify duplicate txids
-        if !state.has_bip34() {}
+        // verify duplicate txids
+        if !state.has_bip34() || prev.height + 1 >= consensus::BIP34_IMPLIES_BIP30_LIMIT {
+            ensure!(self.verify_duplicates(block, &prev), "bad-txns-BIP30");
+        }
 
         // do full verification
         let view = self.verify_inputs(block, &prev, &state)?;
 
         Ok((view, state))
+    }
+
+    fn verify_duplicates(&mut self, block: &Block, prev: &ChainEntry) -> bool {
+        for tx in &block.txdata {
+            if !self.db.has_coins(tx) {
+                continue;
+            }
+
+            let height = prev.height + 1;
+            let hash = self.options.network.bip30.get(&height);
+
+            match hash {
+                Some(hash) if hash != &block.block_hash() => return false,
+                None => return false,
+                _ => (),
+            }
+        }
+        true
     }
 
     fn verify_inputs(

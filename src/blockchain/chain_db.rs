@@ -9,7 +9,7 @@ use crate::util::EmptyResult;
 use bitcoin::Amount;
 use bitcoin::{
     consensus::encode::{deserialize, serialize},
-    Block, BlockHash, OutPoint, TxOut,
+    Block, BlockHash, OutPoint, Transaction, TxOut,
 };
 use failure::Error;
 use log::info;
@@ -440,6 +440,22 @@ impl ChainDB {
                 None => None,
             },
         })
+    }
+
+    pub fn has_coins(&mut self, tx: &Transaction) -> bool {
+        let txid = tx.txid();
+
+        for vout in 0..tx.output.len() {
+            let key = Key::Coin(OutPoint {
+                txid,
+                vout: vout as u32,
+            });
+            if self.db.has(key).unwrap() {
+                return true;
+            }
+        }
+
+        false
     }
 
     fn start(&mut self) {

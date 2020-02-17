@@ -1,6 +1,8 @@
 use super::{BIP9Deployment, TimeData};
+use bitcoin::hashes::{hex::FromHex, Hash};
 use bitcoin::{
-    consensus::params::Params, network::constants::Network, util::uint::Uint256, BlockHeader,
+    consensus::params::Params, network::constants::Network, util::uint::Uint256, BlockHash,
+    BlockHeader,
 };
 use std::{
     collections::HashMap,
@@ -37,6 +39,7 @@ pub struct NetworkParams {
     pub deployments: HashMap<&'static str, BIP9Deployment>,
     pub rule_change_activation_threshold: u32,
     pub miner_confirmation_window: u32,
+    pub bip30: HashMap<u32, BlockHash>,
 }
 
 impl Default for NetworkParams {
@@ -109,6 +112,30 @@ impl NetworkParams {
                 .collect::<HashMap<_, _>>(),
                 rule_change_activation_threshold,
                 miner_confirmation_window,
+                bip30: vec![
+                    (
+                        91842,
+                        BlockHash::from_slice(
+                            &Vec::from_hex(
+                                "eccae000e3c8e4e093936360431f3b7603c563c1ff6181390a4d0a0000000000",
+                            )
+                            .unwrap(),
+                        )
+                        .unwrap(),
+                    ),
+                    (
+                        91880,
+                        BlockHash::from_slice(
+                            &Vec::from_hex(
+                                "21d77ccb4c08386a04ac0196ae10f6a1d2c2a377558ca190f143070000000000",
+                            )
+                            .unwrap(),
+                        )
+                        .unwrap(),
+                    ),
+                ]
+                .into_iter()
+                .collect::<HashMap<_, _>>(),
             },
             Network::Testnet => Self {
                 network,
@@ -149,6 +176,7 @@ impl NetworkParams {
                 .collect::<HashMap<_, _>>(),
                 rule_change_activation_threshold,
                 miner_confirmation_window,
+                bip30: Default::default(),
             },
             Network::Regtest => Self {
                 network,
@@ -197,6 +225,7 @@ impl NetworkParams {
                 .collect::<HashMap<_, _>>(),
                 rule_change_activation_threshold,
                 miner_confirmation_window,
+                bip30: Default::default(),
             },
         }
     }

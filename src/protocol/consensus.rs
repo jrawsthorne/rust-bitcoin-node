@@ -24,9 +24,10 @@ pub const MAX_BLOCK_SIZE: usize = 1_000_000;
 pub const MAX_FUTURE_BLOCK_TIME: u32 = 2 * 60 * 60;
 
 pub const SEQUENCE_GRANULARITY: u32 = 9;
-pub const SEQUENCE_DISABLE_FLAG: u32 = (1 << 31) >> 0;
+pub const SEQUENCE_DISABLE_FLAG: u32 = 1 << 31;
 pub const SEQUENCE_TYPE_FLAG: u32 = 1 << 22;
 pub const SEQUENCE_MASK: u32 = 0x0000ffff;
+pub const BIP34_IMPLIES_BIP30_LIMIT: u32 = 1_983_702;
 
 bitflags::bitflags! {
     pub struct ScriptFlags: u32 {
