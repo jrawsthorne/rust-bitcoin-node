@@ -1,5 +1,4 @@
-use super::connection::{Connection, ConnectionListener};
-use crate::util::EmptyResult;
+use super::connection::Connection;
 use bitcoin::{
     network::{
         constants::ServiceFlags, message::NetworkMessage, message_blockdata::GetHeadersMessage,
@@ -21,23 +20,6 @@ use tokio::time::interval;
 /// Unique ID for a connected peer
 pub type PeerId = usize;
 
-/// Trait that handles peer events
-#[async_trait::async_trait]
-pub trait PeerListener: Send + Sync + 'static {
-    // called when handshake is complete
-    async fn handle_open(&self, _peer: &Peer);
-    // called when disconnected from peer
-    async fn handle_close(&self, _peer: &Peer, _connected: bool);
-    // called when new packet received
-    async fn handle_packet(&self, _peer: &Peer, _packet: NetworkMessage);
-    // called when error encountered
-    async fn handle_error(&self, _peer: &Peer, _error: &Error);
-    // called when peer is banned
-    async fn handle_ban(&self, _peer: &Peer);
-    // called when connection is successful
-    async fn handle_connect(&self, _peer: &Peer);
-}
-
 #[derive(Debug, Eq, PartialEq, Hash)]
 enum ResponseType {
     GetHeaders,
@@ -46,7 +28,7 @@ enum ResponseType {
 
 /// A remote node to send and receive P2P network messages
 pub struct Peer {
-    listener: Option<Arc<dyn PeerListener>>,
+    p2p: P2PManager,
     pub addr: SocketAddr,
     connection_tx: mpsc::UnboundedSender<NetworkMessage>,
     close_connection_tx: mpsc::UnboundedSender<()>,
@@ -76,14 +58,16 @@ pub struct Best {
     pub height: Option<u32>,
 }
 
+use super::p2p::P2PManager;
+
 impl Peer {
     pub fn from_outbound(
         network: Network,
         id: PeerId,
         addr: SocketAddr,
-        listener: Option<Arc<dyn PeerListener>>,
+        p2p: P2PManager,
     ) -> Arc<Self> {
-        let (peer, connection_rx, close_connection_rx) = Self::create_peer(addr, id, listener);
+        let (peer, connection_rx, close_connection_rx) = Self::create_peer(addr, id, p2p);
         Connection::from_outbound(network, peer.clone(), connection_rx, close_connection_rx);
         peer
     }
@@ -91,7 +75,7 @@ impl Peer {
     fn create_peer(
         addr: SocketAddr,
         id: PeerId,
-        listener: Option<Arc<dyn PeerListener>>,
+        p2p: P2PManager,
     ) -> (
         Arc<Peer>,
         mpsc::UnboundedReceiver<NetworkMessage>,
@@ -102,7 +86,7 @@ impl Peer {
         let peer = Arc::new(Self {
             addr,
             connection_tx,
-            listener,
+            p2p,
             id,
             block_map: Default::default(),
             stalling_since: Default::default(),
@@ -203,9 +187,9 @@ impl Peer {
         id: PeerId,
         addr: SocketAddr,
         stream: TcpStream,
-        listener: Option<Arc<dyn PeerListener>>,
+        p2p: P2PManager,
     ) -> Arc<Self> {
-        let (peer, connection_rx, close_connection_rx) = Self::create_peer(addr, id, listener);
+        let (peer, connection_rx, close_connection_rx) = Self::create_peer(addr, id, p2p);
         Connection::from_inbound(
             network,
             peer.clone(),
@@ -303,17 +287,14 @@ impl Peer {
         self.connected.store(false, Ordering::SeqCst);
 
         let _ = self.close_connection_tx.send(());
-        if let Some(listener) = &self.listener {
-            listener.handle_close(self, false).await;
-        }
+
+        self.p2p.lock().await.handle_close(self, false).await;
 
         trace!("destroyed {}", self.addr);
     }
 
     async fn error(&self, error: &Error) {
-        if let Some(listener) = &self.listener {
-            listener.handle_error(self, error).await;
-        }
+        self.p2p.lock().await.handle_error(self, error).await;
     }
 
     async fn handle_version(&self, version: &VersionMessage) {
@@ -327,32 +308,29 @@ impl Peer {
     }
 }
 
-#[async_trait::async_trait]
-impl ConnectionListener for Peer {
+impl Peer {
     // first step once connected to a peer is to send them a version packet
-    async fn handle_connect(&self) {
+    pub async fn handle_connect(&self) {
         if self.destroyed.load(Ordering::SeqCst) {
             return;
         }
 
         self.connected.store(true, Ordering::SeqCst);
 
-        if let Some(listener) = &self.listener {
-            listener.handle_connect(self).await;
-        }
+        self.p2p.lock().await.handle_connect(self).await;
 
         self.send_version().await;
     }
 
     // destroy peer when connection is closed
-    async fn handle_close(&self) {
+    pub async fn handle_close(&self) {
         self.destroy.store(true, Ordering::SeqCst);
     }
 
     // handle packet internally first and then let listeners handle
     // version, verack, ping and pong can be handled exclusively
     // internally but emit them anyway for completeness
-    async fn handle_packet(&self, packet: NetworkMessage) {
+    pub async fn handle_packet(&self, packet: NetworkMessage) {
         if self.destroyed.load(Ordering::SeqCst) || self.destroy.load(Ordering::SeqCst) {
             return;
         }
@@ -379,20 +357,16 @@ impl ConnectionListener for Peer {
             NetworkMessage::Ping(nonce) => self.send(NetworkMessage::Pong(*nonce)).await,
             NetworkMessage::Verack => {
                 self.handshake.store(true, Ordering::SeqCst);
-                if let Some(listener) = &self.listener {
-                    listener.handle_open(self).await;
-                }
+                self.p2p.lock().await.handle_open(self).await;
             }
             _ => (),
         };
 
-        if let Some(listener) = &self.listener {
-            listener.handle_packet(self, packet).await;
-        }
+        self.p2p.lock().await.handle_packet(self, packet).await;
     }
 
     // connection can error when initiating tcp stream, parsing packets or writing to the tcp stream
-    async fn handle_error(&self, error: &Error) {
+    pub async fn handle_error(&self, error: &Error) {
         if self.destroyed.load(Ordering::SeqCst) {
             return;
         }

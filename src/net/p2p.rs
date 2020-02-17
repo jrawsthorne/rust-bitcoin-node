@@ -1,4 +1,4 @@
-use super::peer::{Peer, PeerListener};
+use super::peer::Peer;
 use super::PeerId;
 use crate::blockchain::Chain;
 use crate::blockchain::ChainEntry;
@@ -17,11 +17,11 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{sync::Arc, time::Duration};
 use tokio::stream::StreamExt;
-use tokio::sync::{mpsc, Mutex, RwLock};
+use tokio::sync::{mpsc, Mutex};
 use tokio::time::interval;
 
 const BLOCK_DOWNLOAD_WINDOW: usize = 1024;
-const MAX_BLOCKS_PER_PEER: usize = 128;
+const MAX_BLOCKS_PER_PEER: usize = 16;
 
 /// Trait that handles P2P events
 pub trait P2PListener {
@@ -99,46 +99,50 @@ impl Peers {
     }
 }
 
+pub type P2PManager = Arc<Mutex<P2P>>;
+
 /// A collection of connected peers
 pub struct P2P {
-    addrs: Mutex<Addrs>,
+    addrs: Addrs,
     max_outbound: usize,
-    peers: RwLock<Peers>,
+    peers: Peers,
     next_peer_id: AtomicUsize,
     chain: Arc<Mutex<Chain>>,
-    block_map: RwLock<HashMap<BlockHash, PeerId>>,
+    block_map: HashMap<BlockHash, PeerId>,
     network_params: NetworkParams,
     resolve_headers_tx: mpsc::UnboundedSender<()>,
+    verifying: HashSet<BlockHash>,
 }
 
 impl P2P {
-    pub async fn new(
+    pub fn new(
         chain: Arc<Mutex<Chain>>,
         network_params: NetworkParams,
         addrs: Vec<&str>,
         max_outbound: usize,
-    ) -> Arc<Self> {
+    ) -> P2PManager {
         let (resolve_headers_tx, resolve_headers_rx) = mpsc::unbounded_channel();
-        let p2p = Arc::new(Self {
+        let p2p = Arc::new(Mutex::new(Self {
             max_outbound,
-            addrs: Mutex::new(addrs.iter().filter_map(|addr| addr.parse().ok()).collect()),
-            peers: RwLock::new(Default::default()),
+            addrs: addrs.iter().filter_map(|addr| addr.parse().ok()).collect(),
+            peers: Default::default(),
             next_peer_id: Default::default(),
             chain: chain.clone(),
-            block_map: RwLock::new(Default::default()),
+            block_map: Default::default(),
             network_params,
             resolve_headers_tx,
-        });
-        p2p.clone().refill_peers();
-        p2p.clone().resolve_headers_once(resolve_headers_rx);
+            verifying: Default::default(),
+        }));
+        P2P::maintain_peers(Arc::clone(&p2p));
+        P2P::resolve_headers_task(Arc::clone(&p2p), resolve_headers_rx);
         p2p
     }
 
     // use DNS seeds to find peers to connect to
-    async fn discover_dns_seeds(&self) {
+    async fn discover_dns_seeds(&mut self) {
         use std::net::ToSocketAddrs;
 
-        let mut addrs = tokio::task::block_in_place(move || {
+        let mut addrs = tokio::task::block_in_place(|| {
             let mut seed_addrs = vec![];
             for seed in &self.network_params.dns_seeds {
                 debug!("discovering addrs from {}", seed);
@@ -154,52 +158,46 @@ impl P2P {
 
         debug!("discovered {} addrs from DNS seeds", addrs.len());
         addrs.shuffle(&mut thread_rng());
-        let mut p2p_addrs = self.addrs.lock().await;
         for addr in addrs {
-            p2p_addrs.insert(addr);
+            self.addrs.insert(addr);
         }
     }
 
-    // every 5 seconds check if we are connected to `max_outbound` peers
-    // we don't support inbound connections yet
-    fn refill_peers(self: Arc<Self>) {
+    fn maintain_peers(p2p: P2PManager) {
         tokio::spawn(async move {
             let mut interval = interval(Duration::from_secs(5));
             loop {
                 interval.tick().await;
-
-                let mut peers = self.peers.write().await;
-
-                let need = self.max_outbound - peers.len();
-
-                if need > 0 {
-                    let mut addrs = self.addrs.lock().await;
-                    debug!("refilling peers {}/{}", peers.len(), self.max_outbound);
-                    for _ in 0..need {
-                        if let Some(addr) = addrs.pop_front() {
-                            debug!("connecting to {}", addr);
-                            let id = self.next_peer_id.fetch_add(1, Ordering::SeqCst);
-
-                            if peers.loader.is_none() {
-                                peers.loader = Some(id);
-                            }
-
-                            let peer = Peer::from_outbound(
-                                self.network_params.network,
-                                id,
-                                addr,
-                                Some(self.clone()),
-                            );
-                            peers.insert(id, peer);
-                        } else {
-                            drop(addrs);
-                            self.discover_dns_seeds().await;
-                            break;
-                        }
-                    }
-                }
+                p2p.lock().await.refill_peers(&p2p).await;
             }
         });
+    }
+
+    // every 5 seconds check if we are connected to `max_outbound` peers
+    // we don't support inbound connections yet
+    async fn refill_peers(&mut self, p2p: &P2PManager) {
+        let need = self.max_outbound - self.peers.len();
+
+        if need > 0 {
+            debug!("refilling peers {}/{}", self.peers.len(), self.max_outbound);
+            for _ in 0..need {
+                if let Some(addr) = self.addrs.pop_front() {
+                    debug!("connecting to {}", addr);
+                    let id = self.next_peer_id.fetch_add(1, Ordering::SeqCst);
+
+                    if self.peers.loader.is_none() {
+                        self.peers.loader = Some(id);
+                    }
+
+                    let peer =
+                        Peer::from_outbound(self.network_params.network, id, addr, Arc::clone(p2p));
+                    self.peers.insert(id, peer);
+                } else {
+                    self.discover_dns_seeds().await;
+                    break;
+                }
+            }
+        }
     }
 }
 
@@ -265,39 +263,44 @@ impl P2P {
             peer.send_get_headers(locator, None).await;
         }
 
-        self.resolve_headers();
+        self.queue_resolve_headers();
 
         Ok(())
     }
 
-    fn resolve_headers_once(self: Arc<Self>, mut resolve_headers_rx: mpsc::UnboundedReceiver<()>) {
+    fn resolve_headers_task(p2p: P2PManager, mut resolve_headers_rx: mpsc::UnboundedReceiver<()>) {
         tokio::spawn(async move {
             loop {
                 resolve_headers_rx.next().await;
-
-                if !self.chain.lock().await.is_recent() {
-                    continue;
-                }
-
-                if self.block_map.read().await.len() > BLOCK_DOWNLOAD_WINDOW - MAX_BLOCKS_PER_PEER {
-                    continue;
-                }
-
-                let peers = self.peers.read().await;
-
-                for (_, peer) in peers.peers.iter() {
-                    self.resolve_headers_for_peer(peer, &*peers).await.unwrap();
-                }
+                p2p.lock().await.resolve_headers().await;
             }
         });
     }
 
-    fn resolve_headers(&self) {
+    async fn resolve_headers(&mut self) {
+        if !self.chain.lock().await.is_recent() {
+            return;
+        }
+
+        if self.block_map.len() > BLOCK_DOWNLOAD_WINDOW - MAX_BLOCKS_PER_PEER {
+            return;
+        }
+
+        let peer_ids = self.peers.peers.keys().copied().collect::<Vec<_>>();
+
+        for peer_id in peer_ids {
+            self.resolve_headers_for_peer(&peer_id).await.unwrap();
+        }
+    }
+
+    fn queue_resolve_headers(&self) {
         let _ = self.resolve_headers_tx.send(());
     }
 
-    async fn resolve_headers_for_peer(&self, peer: &Peer, peers: &Peers) -> EmptyResult {
-        if !self.is_syncable(peer, peers).await {
+    async fn resolve_headers_for_peer(&mut self, peer_id: &PeerId) -> EmptyResult {
+        let peer = &self.peers.peers[peer_id];
+
+        if !self.is_syncable(peer).await {
             return Ok(());
         }
 
@@ -308,7 +311,7 @@ impl P2P {
         let best_hash = if let Some(best_hash) = peer.best.lock().await.hash {
             best_hash
         } else {
-            return self.send_sync(peer, peers).await;
+            return self.send_sync(peer).await;
         };
 
         let best = {
@@ -327,10 +330,10 @@ impl P2P {
             best
         };
 
-        let staller = self.get_next_blocks(peer, best).await?;
+        let staller = self.get_next_blocks(peer_id, best).await?;
 
         if let Some(staller) = staller {
-            let slow = peers.peers.get(&staller);
+            let slow = self.peers.peers.get(&staller);
             if let Some(slow) = slow {
                 let stalling_since = slow.stalling_since.load(Ordering::SeqCst);
                 let now = util::now() as usize;
@@ -352,14 +355,16 @@ impl P2P {
     }
 
     async fn get_next_blocks(
-        &self,
-        peer: &Peer,
+        &mut self,
+        peer_id: &PeerId,
         best: ChainEntry,
     ) -> Result<Option<PeerId>, Error> {
         let mut items = vec![];
         let mut saved = vec![];
         let mut waiting = None;
         let mut staller = None;
+
+        let peer = &self.peers.peers[peer_id];
 
         {
             let mut chain = self.chain.lock().await;
@@ -391,8 +396,6 @@ impl P2P {
                 common.height.expect("set when common hash set") as usize + BLOCK_DOWNLOAD_WINDOW;
             let max_height = std::cmp::min(best.height, (end_height as u32) + 1);
 
-            let block_map = self.block_map.read().await;
-
             while walker.height < max_height {
                 let entries = chain
                     .db
@@ -406,9 +409,9 @@ impl P2P {
 
                 for entry in &entries {
                     // This block is already queued for download.
-                    if block_map.contains_key(&entry.hash) {
+                    if self.block_map.contains_key(&entry.hash) {
                         if waiting.is_none() {
-                            waiting = block_map.get(&entry.hash).copied();
+                            waiting = self.block_map.get(&entry.hash).copied();
                         }
                         continue;
                     }
@@ -422,6 +425,10 @@ impl P2P {
                     if chain.db.is_main_chain(entry)? {
                         common.hash = Some(entry.hash);
                         common.height = Some(entry.height);
+                        continue;
+                    }
+
+                    if self.verifying.contains(&entry.hash) {
                         continue;
                     }
 
@@ -468,7 +475,7 @@ impl P2P {
             return Ok(staller);
         }
 
-        self.get_block(peer, items).await;
+        self.get_block(peer_id, items).await;
 
         Ok(staller)
     }
@@ -479,21 +486,25 @@ impl P2P {
         }
     }
 
-    async fn get_block(&self, peer: &Peer, hashes: Vec<BlockHash>) {
+    async fn get_block(&mut self, peer_id: &PeerId, hashes: Vec<BlockHash>) {
         let mut items = vec![];
         let now = util::now();
+
+        let peer = &self.peers.peers[peer_id];
 
         {
             let mut peer_block_map = peer.block_map.lock().await;
             let chain = self.chain.lock().await;
-            let mut block_map = self.block_map.write().await;
 
             for hash in hashes {
-                if block_map.contains_key(&hash) || chain.db.has_block(hash).await.unwrap() {
+                if self.block_map.contains_key(&hash)
+                    || chain.db.has_block(hash).await.unwrap()
+                    || self.verifying.contains(&hash)
+                {
                     continue;
                 }
 
-                block_map.insert(hash, peer.id);
+                self.block_map.insert(hash, peer.id);
                 peer_block_map.insert(hash, now as u32);
 
                 items.push(hash);
@@ -506,7 +517,7 @@ impl P2P {
             debug!(
                 "Requesting {}/{} blocks from peer with getdata ({}).",
                 items.len(),
-                block_map.len(),
+                self.block_map.len(),
                 peer.addr
             );
         }
@@ -520,12 +531,12 @@ impl P2P {
             .store(util::now() as usize, Ordering::SeqCst);
     }
 
-    async fn handle_block(&self, peer: &Peer, block: Block) -> EmptyResult {
+    async fn handle_block(&mut self, peer: &Peer, block: Block) -> EmptyResult {
         let hash = block.block_hash();
 
         peer.block_map.lock().await.remove(&hash);
 
-        let was_requested = self.block_map.read().await.contains_key(&hash);
+        let was_requested = self.block_map.contains_key(&hash);
 
         if !was_requested {
             peer.destroy.store(true, Ordering::SeqCst);
@@ -537,16 +548,17 @@ impl P2P {
 
         peer.stalling_since.store(0, Ordering::SeqCst);
 
-        {
-            // lock chain before block map so that a block is always seen as in the chain or block map
-            let mut chain = self.chain.lock().await;
+        self.block_map.remove(&hash);
+        self.verifying.insert(hash);
 
-            self.block_map.write().await.remove(&hash);
+        let chain = self.chain.clone();
+        let resolve_headers_tx = self.resolve_headers_tx.clone();
 
-            chain.add(block).await?;
-        }
-
-        self.resolve_headers();
+        tokio::spawn(async move {
+            chain.lock().await.add(block).await.unwrap();
+            let _ = resolve_headers_tx.send(());
+            // TODO: remove from self.verifying after chain add
+        });
 
         Ok(())
     }
@@ -603,7 +615,7 @@ impl P2P {
         Ok(())
     }
 
-    async fn is_syncable(&self, peer: &Peer, peers: &Peers) -> bool {
+    async fn is_syncable(&self, peer: &Peer) -> bool {
         if peer.destroyed.load(Ordering::SeqCst) {
             return false;
         }
@@ -616,19 +628,19 @@ impl P2P {
             return false;
         }
 
-        if peers.loader != Some(peer.id) && !self.chain.lock().await.is_recent() {
+        if self.peers.loader != Some(peer.id) && !self.chain.lock().await.is_recent() {
             return false;
         }
 
         true
     }
 
-    async fn send_sync(&self, peer: &Peer, peers: &Peers) -> EmptyResult {
+    async fn send_sync(&self, peer: &Peer) -> EmptyResult {
         if peer.syncing.load(Ordering::SeqCst) {
             return Ok(());
         }
 
-        if !self.is_syncable(peer, peers).await {
+        if !self.is_syncable(peer).await {
             return Ok(());
         }
 
@@ -647,9 +659,8 @@ impl P2P {
     }
 }
 
-#[async_trait::async_trait]
-impl PeerListener for P2P {
-    async fn handle_packet(&self, peer: &Peer, packet: NetworkMessage) {
+impl P2P {
+    pub async fn handle_packet(&mut self, peer: &Peer, packet: NetworkMessage) {
         let res = match packet {
             NetworkMessage::Headers(headers) => self.handle_headers(peer, headers).await,
             NetworkMessage::Block(block) => self.handle_block(peer, block).await,
@@ -664,41 +675,38 @@ impl PeerListener for P2P {
             peer.destroy.store(true, Ordering::SeqCst);
         }
     }
-    async fn handle_close(&self, peer: &Peer, _connected: bool) {
+    pub async fn handle_close(&mut self, peer: &Peer, _connected: bool) {
         debug!("disconnected from {}", peer.addr);
 
-        let mut peers = self.peers.write().await;
-        peers.remove(peer.id);
-        if peers.loader == Some(peer.id) {
-            peers.loader = None;
+        self.peers.remove(peer.id);
+        if self.peers.loader == Some(peer.id) {
+            self.peers.loader = None;
         }
-        let mut block_map = self.block_map.write().await;
 
         let peer_block_map = peer.block_map.lock().await.drain().collect::<Vec<_>>();
 
         for (hash, _) in peer_block_map {
-            block_map.remove(&hash);
+            self.block_map.remove(&hash);
         }
 
-        self.resolve_headers();
+        self.queue_resolve_headers();
     }
 
-    async fn handle_open(&self, peer: &Peer) {
+    pub async fn handle_open(&mut self, peer: &Peer) {
         debug!("handshake complete with {}", peer.addr);
         peer.send(NetworkMessage::SendHeaders).await;
-        let peers = self.peers.read().await;
-        if self.send_sync(peer, &*peers).await.is_err() {
+        if self.send_sync(peer).await.is_err() {
             peer.destroy.store(true, Ordering::SeqCst);
         }
     }
 
-    async fn handle_error(&self, peer: &Peer, error: &Error) {
+    pub async fn handle_error(&mut self, peer: &Peer, error: &Error) {
         debug!("error: {} from peer {}", error, peer.addr);
     }
 
-    async fn handle_ban(&self, _peer: &Peer) {}
+    pub async fn handle_ban(&mut self, _peer: &Peer) {}
 
-    async fn handle_connect(&self, peer: &Peer) {
+    pub async fn handle_connect(&mut self, peer: &Peer) {
         debug!("connected to {}", peer.addr);
     }
 }
