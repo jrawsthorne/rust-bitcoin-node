@@ -615,17 +615,10 @@ impl Chain {
             }
 
             if i > 0 && tx.version >= 2 {
-                // let prev_heights: Vec<u32> = tx
-                //     .input
-                //     .iter()
-                //     .map(|input| {
-                //         view.get_entry(&input.previous_output)
-                //             .unwrap()
-                //             .height
-                //             .unwrap()
-                //     })
-                //     .collect();
-                // ensure!(self.verify_sequence_locks(tx, &prev_heights, prev));
+                ensure!(
+                    self.verify_locks(prev, tx, &view, &state.lock_flags),
+                    "bad-txns-nonfinal"
+                );
             }
 
             sigops += tx.get_sigop_cost(&view, state.script_flags);
@@ -662,45 +655,6 @@ impl Chain {
 
         Ok(view)
     }
-
-    fn verify_sequence_locks(
-        &self,
-        tx: &Transaction,
-        prev_heights: &[u32],
-        prev: &ChainEntry,
-    ) -> bool {
-        true
-    }
-
-    // // fn evaluate_sequence_locks()
-
-    // fn verify_locks(&self, prev: &ChainEntry, tx: &Transaction, view: &CoinView) -> bool {
-    //     let (height, time) = self.get_locks(prev, tx, view);
-
-    //     if let Some(height) = height {
-    //         if height > prev.height {
-    //             return false;
-    //         }
-    //     }
-
-    //     if let Some(time) = time {
-    //         let mtp = self.get_median_time(prev, None);
-    //         if time >= mtp {
-    //             return false;
-    //         }
-    //     }
-
-    //     true
-    // }
-
-    // fn get_locks(
-    //     &self,
-    //     prev: &ChainEntry,
-    //     tx: &Transaction,
-    //     view: &CoinView,
-    // ) -> (Option<u32>, Option<u32>) {
-    //     (None, None)
-    // }
 
     fn get_median_time(&mut self, prev: ChainEntry) -> Result<u32, Error> {
         let mut median = Vec::with_capacity(consensus::MEDIAN_TIMESPAN);
@@ -1027,8 +981,86 @@ impl Chain {
         deployment: BIP9Deployment,
     ) -> Result<bool, Error> {
         let status = self.get_deployment_status(prev, deployment)?;
-        debug!("{} is {:?}", deployment.name, status);
         Ok(status == ThresholdState::Active)
+    }
+
+    fn verify_locks(
+        &mut self,
+        prev: &ChainEntry,
+        tx: &Transaction,
+        view: &CoinView,
+        flags: &LockFlags,
+    ) -> bool {
+        let (height, time) = self.get_locks(&prev, tx, view, flags);
+
+        if let Some(height) = height {
+            if height >= prev.height + 1 {
+                return false;
+            }
+        }
+
+        if let Some(time) = time {
+            let mtp = self.get_median_time(*prev).unwrap();
+
+            if time >= mtp {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    fn get_locks(
+        &mut self,
+        prev: &ChainEntry,
+        tx: &Transaction,
+        view: &CoinView,
+        flags: &LockFlags,
+    ) -> (Option<u32>, Option<u32>) {
+        use crate::protocol::consensus::{
+            SEQUENCE_DISABLE_FLAG, SEQUENCE_GRANULARITY, SEQUENCE_MASK, SEQUENCE_TYPE_FLAG,
+        };
+
+        if !flags.contains(LockFlags::VERIFY_SEQUENCE) {
+            return (None, None);
+        }
+
+        if tx.is_coin_base() || tx.version < 2 {
+            return (None, None);
+        }
+
+        let mut min_height = None;
+        let mut min_time = None;
+
+        for input in &tx.input {
+            if input.sequence & SEQUENCE_DISABLE_FLAG != 0 {
+                continue;
+            }
+
+            let mut height: u32 = view
+                .get_entry(&input.previous_output)
+                .and_then(|entry| entry.height)
+                .unwrap_or(self.height + 1);
+
+            if input.sequence & SEQUENCE_TYPE_FLAG == 0 {
+                height += (input.sequence & SEQUENCE_MASK) - 1;
+                min_height = Some(std::cmp::max(min_height.unwrap_or(0), height));
+                continue;
+            }
+
+            height = height.checked_sub(1).unwrap_or(0);
+
+            let entry = self
+                .db
+                .get_ancestor(prev, height)
+                .expect("prev must exist before next checked");
+
+            let mut time = self.get_median_time(entry).unwrap();
+            time += ((input.sequence & SEQUENCE_MASK) << SEQUENCE_GRANULARITY) - 1;
+            min_time = Some(std::cmp::max(min_time.unwrap_or(0), time));
+        }
+
+        (min_height, min_time)
     }
 
     // fn notify_block(&self, block: &Block, entry: &ChainEntry) {
