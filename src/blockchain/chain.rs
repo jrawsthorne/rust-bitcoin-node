@@ -800,11 +800,12 @@ impl Chain {
 
         let mut actual_timespan = prev.time - first.time;
 
-        // timespan can only be increased or decreased by 25%
+        // max decrease is 75%
         if actual_timespan < DIFFCHANGE_TIMESPAN / 4 {
             actual_timespan = DIFFCHANGE_TIMESPAN / 4;
         }
 
+        // max increase is 300%
         if actual_timespan > DIFFCHANGE_TIMESPAN * 4 {
             actual_timespan = DIFFCHANGE_TIMESPAN * 4;
         }
