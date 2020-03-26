@@ -28,6 +28,12 @@ pub struct CheckQueue {
     batch_size: usize,
 }
 
+impl Default for CheckQueue {
+    fn default() -> Self {
+        Self::new(128)
+    }
+}
+
 impl CheckQueue {
     pub fn new(batch_size: usize) -> Self {
         Self {
@@ -144,6 +150,7 @@ impl CheckQueueState {
     }
 }
 
+#[derive(Default)]
 pub struct CheckQueueControl {
     queue: CheckQueue,
     done: bool,
@@ -162,6 +169,14 @@ impl CheckQueueControl {
 
     pub fn add(&self, checks: Vec<ScriptVerification>) {
         self.queue.add(checks)
+    }
+
+    pub fn open(&self) {
+        let threads = num_cpus::get();
+        log::info!("Starting {} threads for script verification", threads);
+        for _ in 0..threads {
+            self.queue.thread();
+        }
     }
 }
 

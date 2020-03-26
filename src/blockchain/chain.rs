@@ -6,8 +6,8 @@ use crate::protocol::{
     BIP9Deployment, NetworkParams, ThresholdState,
 };
 use crate::util::EmptyResult;
+use crate::verification::CheckQueueControl;
 use crate::verification::{BlockVerifier, TransactionVerifier};
-use crate::verification::{CheckQueue, CheckQueueControl};
 use bitcoin::{
     blockdata::constants::{DIFFCHANGE_INTERVAL, DIFFCHANGE_TIMESPAN, MAX_BLOCK_WEIGHT},
     hashes::sha256d::Hash as H256,
@@ -65,10 +65,6 @@ pub struct Chain {
 
 impl Chain {
     pub fn new(options: ChainOptions) -> Self {
-        let verifier_queue = CheckQueue::new(128);
-        for _ in 0..8 {
-            verifier_queue.thread();
-        }
         Self {
             db: ChainDB::new(
                 options.network.clone(),
@@ -80,13 +76,15 @@ impl Chain {
             height: 0,
             listeners: vec![],
             options,
-            verifier: CheckQueueControl::new(verifier_queue),
+            verifier: CheckQueueControl::default(),
             state: DeploymentState::default(),
         }
     }
 
     pub async fn open(&mut self) -> EmptyResult {
         self.db.open().await?;
+
+        self.verifier.open();
 
         let tip = *self
             .db
