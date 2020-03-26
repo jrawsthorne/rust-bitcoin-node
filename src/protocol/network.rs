@@ -9,6 +9,14 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+fn b(hash: &str) -> BlockHash {
+    BlockHash::from_slice(&Vec::from_hex(hash).unwrap()).unwrap()
+}
+
+fn h<T: std::hash::Hash + Eq, B>(vec: Vec<(T, B)>) -> HashMap<T, B> {
+    vec.into_iter().collect::<HashMap<_, _>>()
+}
+
 #[derive(Clone)]
 pub struct NetworkParams {
     pub network: Network,
@@ -93,7 +101,11 @@ impl NetworkParams {
                 pow_target_spacing,
                 max_tip_age: 24 * 60 * 60,
                 time: time.clone(),
-                deployments: vec![
+                deployments: h(vec![
+                    (
+                        "segwit",
+                        BIP9Deployment::new("segwit", 1, 1462060800, 1493596800),
+                    ),
                     (
                         "taproot",
                         BIP9Deployment::new("taproot", 2, 1199145601, 1230767999),
@@ -107,35 +119,19 @@ impl NetworkParams {
                         "dummy",
                         BIP9Deployment::new("dummy", 28, 1199145601, 1230767999),
                     ),
-                ]
-                .into_iter()
-                .collect::<HashMap<_, _>>(),
+                ]),
                 rule_change_activation_threshold,
                 miner_confirmation_window,
-                bip30: vec![
+                bip30: h(vec![
                     (
                         91842,
-                        BlockHash::from_slice(
-                            &Vec::from_hex(
-                                "eccae000e3c8e4e093936360431f3b7603c563c1ff6181390a4d0a0000000000",
-                            )
-                            .unwrap(),
-                        )
-                        .unwrap(),
+                        b("eccae000e3c8e4e093936360431f3b7603c563c1ff6181390a4d0a0000000000"),
                     ),
                     (
                         91880,
-                        BlockHash::from_slice(
-                            &Vec::from_hex(
-                                "21d77ccb4c08386a04ac0196ae10f6a1d2c2a377558ca190f143070000000000",
-                            )
-                            .unwrap(),
-                        )
-                        .unwrap(),
+                        b("21d77ccb4c08386a04ac0196ae10f6a1d2c2a377558ca190f143070000000000"),
                     ),
-                ]
-                .into_iter()
-                .collect::<HashMap<_, _>>(),
+                ]),
             },
             Network::Testnet => Self {
                 network,
@@ -161,7 +157,7 @@ impl NetworkParams {
                 pow_target_spacing,
                 max_tip_age: 24 * 60 * 60,
                 time: time.clone(),
-                deployments: vec![
+                deployments: h(vec![
                     (
                         "taproot",
                         BIP9Deployment::new("taproot", 2, 1199145601, 1230767999),
@@ -171,9 +167,7 @@ impl NetworkParams {
                         "dummy",
                         BIP9Deployment::new("dummy", 28, 1199145601, 1230767999),
                     ),
-                ]
-                .into_iter()
-                .collect::<HashMap<_, _>>(),
+                ]),
                 rule_change_activation_threshold,
                 miner_confirmation_window,
                 bip30: Default::default(),
@@ -197,7 +191,7 @@ impl NetworkParams {
                 pow_target_spacing,
                 max_tip_age: 0xffffffff,
                 time: time.clone(),
-                deployments: vec![
+                deployments: h(vec![
                     (
                         "taproot",
                         BIP9Deployment::new(
@@ -220,9 +214,7 @@ impl NetworkParams {
                         "dummy",
                         BIP9Deployment::new("dummy", 28, 0, BIP9Deployment::NO_TIMEOUT),
                     ),
-                ]
-                .into_iter()
-                .collect::<HashMap<_, _>>(),
+                ]),
                 rule_change_activation_threshold,
                 miner_confirmation_window,
                 bip30: Default::default(),
