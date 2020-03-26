@@ -221,13 +221,16 @@ impl TransactionVerifier for Transaction {
             ensure!(value_out <= MAX_MONEY, "bad-txns-txouttotal-toolarge");
         }
 
-        // Check for duplicate inputs
-        let mut outpoints = HashSet::with_capacity(self.input.len());
-        for input in &self.input {
-            ensure!(
-                outpoints.insert(&input.previous_output),
-                "bad-txns-inputs-duplicate"
-            );
+        // can only be duplicate inputs if more than 1
+        if self.input.len() > 1 {
+            // Check for duplicate inputs
+            let mut outpoints = HashSet::with_capacity(self.input.len());
+            for input in &self.input {
+                ensure!(
+                    outpoints.insert(&input.previous_output),
+                    "bad-txns-inputs-duplicate"
+                );
+            }
         }
 
         if self.is_coin_base() {
@@ -247,12 +250,7 @@ impl TransactionVerifier for Transaction {
 
     /// Test whether the transaction has a non-empty witness.
     fn has_witness(&self) -> bool {
-        for input in &self.input {
-            if !input.witness.is_empty() {
-                return true;
-            }
-        }
-        false
+        self.input.iter().any(|input| !input.witness.is_empty())
     }
 
     fn get_size(&self) -> usize {
