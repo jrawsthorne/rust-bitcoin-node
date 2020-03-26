@@ -122,7 +122,6 @@ impl Peer {
                 }
 
                 if self.destroy.load(Ordering::SeqCst) {
-                    debug!("was told to destroy {}", self.addr);
                     self.destroy().await;
                     return;
                 }
@@ -159,16 +158,13 @@ impl Peer {
                     }
                 }
 
+                if self.syncing.load(Ordering::SeqCst)
+                    && self.block_map.lock().await.len() > 0
+                    && now as usize > self.block_time.load(Ordering::SeqCst) + 120
                 {
-                    let block_map = self.block_map.lock().await;
-                    if self.syncing.load(Ordering::SeqCst)
-                        && block_map.len() > 0
-                        && now as usize > self.block_time.load(Ordering::SeqCst) + 120
-                    {
-                        debug!("Peer is stalling (block). {}", self.addr);
-                        self.destroy().await;
-                        return;
-                    }
+                    debug!("Peer is stalling (block). {}", self.addr);
+                    self.destroy().await;
+                    return;
                 }
 
                 let stalling_since = self.stalling_since.load(Ordering::SeqCst);
@@ -253,6 +249,7 @@ impl Peer {
         if self.connection_tx.send(packet).is_err() {
             // don't call destroy() because it could cause deadlock
             // if tried to send while holding peers read lock
+            trace!("destroy: connection_tx send error {} ", self.addr);
             self.destroy.store(true, Ordering::SeqCst);
         } else {
             trace!("sent {} packet to {}", command, self.addr);
@@ -288,13 +285,13 @@ impl Peer {
 
         let _ = self.close_connection_tx.send(());
 
-        self.p2p.lock().await.handle_close(self, false).await;
+        self.p2p.handle_close(self, false).await;
 
         trace!("destroyed {}", self.addr);
     }
 
     async fn error(&self, error: &Error) {
-        self.p2p.lock().await.handle_error(self, error).await;
+        self.p2p.handle_error(self, error).await;
     }
 
     async fn handle_version(&self, version: &VersionMessage) {
@@ -303,6 +300,8 @@ impl Peer {
         if services.has(ServiceFlags::NETWORK) {
             self.send(NetworkMessage::Verack).await;
         } else {
+            trace!("destroy: no network service bit {} ", self.addr);
+
             self.destroy.store(true, Ordering::SeqCst);
         }
     }
@@ -317,13 +316,15 @@ impl Peer {
 
         self.connected.store(true, Ordering::SeqCst);
 
-        self.p2p.lock().await.handle_connect(self).await;
+        self.p2p.handle_connect(self).await;
 
         self.send_version().await;
     }
 
     // destroy peer when connection is closed
     pub async fn handle_close(&self) {
+        trace!("destroy: connection closed {} ", self.addr);
+
         self.destroy.store(true, Ordering::SeqCst);
     }
 
@@ -357,12 +358,12 @@ impl Peer {
             NetworkMessage::Ping(nonce) => self.send(NetworkMessage::Pong(*nonce)).await,
             NetworkMessage::Verack => {
                 self.handshake.store(true, Ordering::SeqCst);
-                self.p2p.lock().await.handle_open(self).await;
+                self.p2p.handle_open(self).await;
             }
             _ => (),
         };
 
-        self.p2p.lock().await.handle_packet(self, packet).await;
+        self.p2p.handle_packet(self, packet).await;
     }
 
     // connection can error when initiating tcp stream, parsing packets or writing to the tcp stream
@@ -371,6 +372,8 @@ impl Peer {
             return;
         }
         self.error(error).await;
+        trace!("destroy: connection error {} ", self.addr);
+
         self.destroy.store(true, Ordering::SeqCst);
     }
 }

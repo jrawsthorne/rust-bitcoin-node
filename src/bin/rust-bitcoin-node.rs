@@ -2,7 +2,7 @@ use log::LevelFilter;
 use rust_bitcoin_node::{
     blockchain::{Chain, ChainOptions},
     net::P2P,
-    protocol::{NetworkParams},
+    protocol::NetworkParams,
 };
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -30,8 +30,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         NetworkParams::from_network(bitcoin::Network::Bitcoin),
         vec![],
         8,
-    )
-    .await;
+    );
 
     tokio::signal::ctrl_c().await?;
 

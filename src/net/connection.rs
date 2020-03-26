@@ -81,7 +81,12 @@ impl Connection {
         let recv_socket = async {
             while let Some(message) = r.next().await {
                 match message {
-                    Ok(message) => peer.handle_packet(message).await,
+                    Ok(message) => {
+                        let peer = Arc::clone(&peer);
+                        tokio::spawn(async move {
+                            peer.handle_packet(message).await;
+                        });
+                    }
                     Err(error) => {
                         peer.handle_error(&error.into()).await;
                         return;
