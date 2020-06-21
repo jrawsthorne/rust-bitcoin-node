@@ -21,7 +21,9 @@ pub mod util;
 /// Verification
 pub mod verification;
 
+pub mod error;
 pub use blockchain::{ChainEntry, ChainListener};
+
+pub use blockchain::ChainEntry;
 pub use coins::{CoinEntry, CoinView};
-pub use mempool::MempoolListener;
-pub use net::{ConnectionListener, P2PListener, Peer, PeerId, P2P};
+// pub use net::{Peer, PeerId, P2P};

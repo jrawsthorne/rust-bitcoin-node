@@ -1,6 +1,5 @@
 use crate::protocol::{get_block_subsidy, NetworkParams};
-use bitcoin::util::uint::Uint256;
-use bitcoin::{blockdata::script, Address, BlockHash, BlockHeader, Transaction, TxIn, TxOut};
+use bitcoin::{blockdata::script, Address, BlockHash, Transaction, TxIn, TxOut};
 
 pub struct BlockTemplate {
     pub height: u32,
@@ -10,8 +9,7 @@ pub struct BlockTemplate {
     pub prev_blockhash: BlockHash,
     pub version: u32,
     pub time: u32,
-    pub bits: u32,
-    pub target: Uint256,
+    pub target: u32,
 }
 
 impl BlockTemplate {
@@ -21,11 +19,10 @@ impl BlockTemplate {
         prev_blockhash: BlockHash,
         version: u32,
         time: u32,
-        target: Uint256,
+        target: u32,
     ) -> Self {
         let mut network_params = NetworkParams::default();
         network_params.network = bitcoin::Network::Regtest;
-        let bits = BlockHeader::compact_target_from_u256(&target);
         Self {
             height,
             address,
@@ -34,7 +31,6 @@ impl BlockTemplate {
             prev_blockhash,
             version,
             time,
-            bits,
             target,
         }
     }
@@ -50,6 +46,7 @@ impl BlockTemplate {
         let mut input = TxIn::default();
         input.script_sig = script::Builder::new()
             .push_int(self.height as i64)
+            .push_slice(&[0]) // cb script sig padding (2 <= len <= 100)
             .into_script();
         coinbase.input.push(input);
 

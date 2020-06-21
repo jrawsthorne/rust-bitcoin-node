@@ -8,13 +8,14 @@ use bitcoin::{
 };
 use failure::Error;
 use log::{debug, error, trace};
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpStream;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::mpsc;
 use tokio::time::interval;
 
 /// Unique ID for a connected peer
@@ -102,7 +103,16 @@ impl Peer {
             block_time: Default::default(),
         });
         Arc::clone(&peer).stall_timer();
+        tokio::spawn(peer.clone().pinger());
         (peer, connection_rx, close_connection_rx)
+    }
+
+    async fn pinger(self: Arc<Self>) {
+        let mut interval = interval(Duration::from_secs(5));
+        loop {
+            interval.tick().await;
+            self.send(NetworkMessage::Ping(0));
+        }
     }
 
     fn stall_timer(self: Arc<Self>) {
@@ -122,7 +132,7 @@ impl Peer {
                 }
 
                 if self.destroy.load(Ordering::SeqCst) {
-                    self.destroy().await;
+                    self.destroy();
                     return;
                 }
 
@@ -143,27 +153,27 @@ impl Peer {
 
                 if !handshake && now > connected_time + 10 {
                     error!("Handshake timeout {}", self.addr);
-                    self.destroy().await;
+                    self.destroy();
                     return;
                 }
 
                 {
-                    let response_map = self.response_map.lock().await;
+                    let response_map = self.response_map.lock();
                     for (item, timeout) in response_map.iter() {
                         if &now > timeout {
                             error!("Peer is stalling {:?} {}", item, self.addr);
-                            self.destroy().await;
+                            self.destroy();
                             return;
                         }
                     }
                 }
 
                 if self.syncing.load(Ordering::SeqCst)
-                    && self.block_map.lock().await.len() > 0
+                    && self.block_map.lock().len() > 0
                     && now as usize > self.block_time.load(Ordering::SeqCst) + 120
                 {
                     debug!("Peer is stalling (block). {}", self.addr);
-                    self.destroy().await;
+                    self.destroy();
                     return;
                 }
 
@@ -171,7 +181,7 @@ impl Peer {
 
                 if stalling_since > 0 && now as usize > stalling_since + 2 {
                     debug!("Peer is stalling block download window");
-                    self.destroy().await;
+                    self.destroy();
                     return;
                 }
             }
@@ -196,7 +206,7 @@ impl Peer {
         peer
     }
 
-    pub async fn send_version(&self) {
+    pub fn send_version(&self) {
         use crate::util::now;
         use bitcoin::network::address::Address;
         use bitcoin::network::constants::PROTOCOL_VERSION;
@@ -216,10 +226,10 @@ impl Peer {
             start_height: 0,
             relay: false,
         };
-        self.send(NetworkMessage::Version(version)).await;
+        self.send(NetworkMessage::Version(version));
     }
 
-    async fn add_timeout(&self, packet: &NetworkMessage) {
+    fn add_timeout(&self, packet: &NetworkMessage) {
         let timeout = 30;
         use crate::util::now;
 
@@ -227,25 +237,23 @@ impl Peer {
             NetworkMessage::GetHeaders(_) => {
                 self.response_map
                     .lock()
-                    .await
                     .insert(ResponseType::GetHeaders, now() + timeout);
             }
             NetworkMessage::GetData(_) => {
                 self.response_map
                     .lock()
-                    .await
                     .insert(ResponseType::GetData, now() + (timeout * 2));
             }
             _ => (),
         }
     }
 
-    pub async fn send(&self, packet: NetworkMessage) {
+    pub fn send(&self, packet: NetworkMessage) {
         if self.destroyed.load(Ordering::SeqCst) {
             return;
         }
         let command = packet.command();
-        self.add_timeout(&packet).await;
+        self.add_timeout(&packet);
         if self.connection_tx.send(packet).is_err() {
             // don't call destroy() because it could cause deadlock
             // if tried to send while holding peers read lock
@@ -256,7 +264,7 @@ impl Peer {
         }
     }
 
-    pub async fn send_get_headers(&self, locator: Vec<BlockHash>, stop: Option<BlockHash>) {
+    pub fn send_get_headers(&self, locator: Vec<BlockHash>, stop: Option<BlockHash>) {
         if locator.is_empty() {
             return;
         }
@@ -265,14 +273,14 @@ impl Peer {
             self.addr
         );
         debug!("Sending getheaders (hash={}, stop={:?}).", locator[0], stop);
-        self.send(NetworkMessage::GetHeaders(GetHeadersMessage::new(
+        let gh = NetworkMessage::GetHeaders(GetHeadersMessage::new(
             locator,
             stop.unwrap_or(BlockHash::default()),
-        )))
-        .await;
+        ));
+        self.send(gh);
     }
 
-    pub async fn destroy(&self) {
+    pub fn destroy(&self) {
         if self.destroyed.load(Ordering::SeqCst) {
             trace!("{} already destroyed", self.addr);
             return;
@@ -285,20 +293,20 @@ impl Peer {
 
         let _ = self.close_connection_tx.send(());
 
-        self.p2p.handle_close(self, false).await;
+        self.p2p.handle_close(self, false);
 
         trace!("destroyed {}", self.addr);
     }
 
-    async fn error(&self, error: &Error) {
-        self.p2p.handle_error(self, error).await;
+    fn error(&self, error: &Error) {
+        self.p2p.handle_error(self, error);
     }
 
-    async fn handle_version(&self, version: &VersionMessage) {
+    fn handle_version(&self, version: &VersionMessage) {
         let services = version.services;
 
         if services.has(ServiceFlags::NETWORK) {
-            self.send(NetworkMessage::Verack).await;
+            self.send(NetworkMessage::Verack);
         } else {
             trace!("destroy: no network service bit {} ", self.addr);
 
@@ -309,20 +317,20 @@ impl Peer {
 
 impl Peer {
     // first step once connected to a peer is to send them a version packet
-    pub async fn handle_connect(&self) {
+    pub fn handle_connect(&self) {
         if self.destroyed.load(Ordering::SeqCst) {
             return;
         }
 
         self.connected.store(true, Ordering::SeqCst);
 
-        self.p2p.handle_connect(self).await;
+        self.p2p.handle_connect(self);
 
-        self.send_version().await;
+        self.send_version();
     }
 
     // destroy peer when connection is closed
-    pub async fn handle_close(&self) {
+    pub fn handle_close(&self) {
         trace!("destroy: connection closed {} ", self.addr);
 
         self.destroy.store(true, Ordering::SeqCst);
@@ -331,47 +339,41 @@ impl Peer {
     // handle packet internally first and then let listeners handle
     // version, verack, ping and pong can be handled exclusively
     // internally but emit them anyway for completeness
-    pub async fn handle_packet(&self, packet: NetworkMessage) {
+    pub fn handle_packet(&self, packet: NetworkMessage) {
         if self.destroyed.load(Ordering::SeqCst) || self.destroy.load(Ordering::SeqCst) {
             return;
         }
 
         match &packet {
             NetworkMessage::Block(_) => {
-                self.response_map
-                    .lock()
-                    .await
-                    .remove(&ResponseType::GetData);
+                self.response_map.lock().remove(&ResponseType::GetData);
             }
             NetworkMessage::Headers(_) => {
-                self.response_map
-                    .lock()
-                    .await
-                    .remove(&ResponseType::GetHeaders);
+                self.response_map.lock().remove(&ResponseType::GetHeaders);
             }
             _ => (),
         };
 
         trace!("received {} packet from {}", packet.command(), self.addr);
         match &packet {
-            NetworkMessage::Version(version) => self.handle_version(version).await,
-            NetworkMessage::Ping(nonce) => self.send(NetworkMessage::Pong(*nonce)).await,
+            NetworkMessage::Version(version) => self.handle_version(version),
+            NetworkMessage::Ping(nonce) => self.send(NetworkMessage::Pong(*nonce)),
             NetworkMessage::Verack => {
                 self.handshake.store(true, Ordering::SeqCst);
-                self.p2p.handle_open(self).await;
+                self.p2p.handle_open(self);
             }
             _ => (),
         };
 
-        self.p2p.handle_packet(self, packet).await;
+        self.p2p.handle_packet(self, packet);
     }
 
     // connection can error when initiating tcp stream, parsing packets or writing to the tcp stream
-    pub async fn handle_error(&self, error: &Error) {
+    pub fn handle_error(&self, error: &Error) {
         if self.destroyed.load(Ordering::SeqCst) {
             return;
         }
-        self.error(error).await;
+        self.error(error);
         trace!("destroy: connection error {} ", self.addr);
 
         self.destroy.store(true, Ordering::SeqCst);

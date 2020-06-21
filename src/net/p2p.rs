@@ -2,47 +2,26 @@ use super::peer::Peer;
 use super::PeerId;
 use crate::blockchain::Chain;
 use crate::blockchain::ChainEntry;
-use crate::blockchain::ChainListener;
 use crate::protocol::NetworkParams;
 use crate::util::{self, EmptyResult};
 use bitcoin::secp256k1::rand::{seq::SliceRandom, thread_rng};
 use bitcoin::{
     network::{message::NetworkMessage, message_blockdata::Inventory},
-    Block, BlockHash, BlockHeader, Transaction,
+    Block, BlockHash, BlockHeader,
 };
-use failure::Error;
+use failure::{err_msg, Error};
 use log::{debug, error, trace, warn};
+use parking_lot::{Mutex, RwLock};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{sync::Arc, time::Duration};
+use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::Notify;
-use tokio::sync::{Mutex, RwLock};
 use tokio::time::interval;
 
 const BLOCK_DOWNLOAD_WINDOW: usize = 1024;
 const MAX_BLOCKS_PER_PEER: usize = 16;
-
-/// Trait that handles P2P events
-pub trait P2PListener {
-    fn handle_tx(&self, _tx: &Transaction) {}
-    fn handle_error(&self, _error: &Error) {}
-    fn handle_connection(&self, _addr: &SocketAddr) {}
-    fn handle_listening(&self) {}
-    fn handle_block(&self, _block: &Block, _entry: &ChainEntry) {}
-    fn handle_full(&self) {}
-    fn handle_loader(&self, _peer: &Peer) {}
-    fn handle_packet(&self, _packet: &NetworkMessage, _peer: &Peer) {}
-    fn handle_peer_connect(&self, _peer: &Peer) {}
-    fn handle_peer_open(&self, _peer: &Peer) {}
-    fn handle_peer_close(&self, _peer: &Peer, _connected: bool) {}
-    fn handle_ban(&self, _peer: &Peer) {}
-    fn handle_peer(&self, _peer: &Peer) {}
-    fn handle_timeout(&self) {}
-    fn handle_ack(&self, _peer: &Peer) {}
-    fn handle_reject(&self, _peer: &Peer) {}
-    fn handle_open(&self) {}
-}
 
 #[derive(Default)]
 struct Addrs {
@@ -99,48 +78,30 @@ impl Peers {
     }
 }
 
-pub type P2PManager = P2P;
+pub type P2PManager = Arc<P2P>;
 
 /// A collection of connected peers
 pub struct P2P {
-    addrs: Arc<Mutex<Addrs>>,
+    addrs: Mutex<Addrs>,
     max_outbound: usize,
-    peers: Arc<RwLock<Peers>>,
-    next_peer_id: Arc<AtomicUsize>,
-    chain: Arc<Mutex<Chain>>,
-    block_map: Arc<RwLock<HashMap<BlockHash, PeerId>>>,
+    peers: RwLock<Peers>,
+    next_peer_id: AtomicUsize,
+    chain: Arc<RwLock<Chain>>,
+    block_map: RwLock<HashMap<BlockHash, PeerId>>,
     network_params: NetworkParams,
-    verifying: Arc<RwLock<HashSet<BlockHash>>>,
-    resolve_headers_notify: Arc<Notify>,
-}
-
-impl Clone for P2P {
-    fn clone(&self) -> Self {
-        Self {
-            addrs: Arc::clone(&self.addrs),
-            max_outbound: self.max_outbound,
-            peers: Arc::clone(&self.peers),
-            next_peer_id: Arc::clone(&self.next_peer_id),
-            chain: Arc::clone(&self.chain),
-            block_map: Arc::clone(&self.block_map),
-            network_params: self.network_params.clone(),
-            verifying: Arc::clone(&self.verifying),
-            resolve_headers_notify: Arc::clone(&self.resolve_headers_notify),
-        }
-    }
+    verifying: RwLock<HashSet<BlockHash>>,
+    resolve_headers_notify: Notify,
 }
 
 impl P2P {
     pub fn new(
-        chain: Arc<Mutex<Chain>>,
+        chain: Arc<RwLock<Chain>>,
         network_params: NetworkParams,
         addrs: Vec<&str>,
         max_outbound: usize,
-    ) -> Self {
-        let p2p = Self {
-            addrs: Arc::new(Mutex::new(
-                addrs.iter().filter_map(|addr| addr.parse().ok()).collect(),
-            )),
+    ) -> Arc<Self> {
+        let p2p = Arc::new(Self {
+            addrs: Mutex::new(addrs.iter().filter_map(|addr| addr.parse().ok()).collect()),
             max_outbound,
             peers: Default::default(),
             next_peer_id: Default::default(),
@@ -149,80 +110,86 @@ impl P2P {
             network_params,
             verifying: Default::default(),
             resolve_headers_notify: Default::default(),
-        };
-        p2p.clone().maintain_peers();
-        p2p.clone().resolve_headers_task();
+        });
+        tokio::spawn(p2p.clone().maintain_peers());
+        tokio::spawn(p2p.clone().resolve_headers_task());
         p2p
     }
 
     async fn discover_dns_seeds(&self) {
-        use std::net::ToSocketAddrs;
-        let mut seed_addrs: Vec<SocketAddr> = tokio::task::block_in_place(|| {
-            self.network_params
-                .dns_seeds
-                .iter()
-                .filter_map(|seed| {
-                    debug!("discovering addrs from {}", seed);
-                    let addrs = (*seed, self.network_params.p2p_port).to_socket_addrs().ok();
-                    if let Some(addrs) = &addrs {
-                        debug!("discovered {} addrs from {}", addrs.len(), seed);
-                    } else {
-                        warn!("failed to discover addrs from {}", seed);
-                    }
-                    addrs
-                })
-                .flatten()
-                .collect()
-        });
+        use tokio::net::lookup_host;
+
+        let mut seed_addrs = vec![];
+
+        for seed in &self.network_params.dns_seeds {
+            debug!("discovering addrs from {}", seed);
+            match lookup_host((*seed, self.network_params.p2p_port)).await {
+                Ok(addrs) => {
+                    let addrs: Vec<SocketAddr> = addrs.collect();
+                    debug!("discovered {} addrs from {}", addrs.len(), seed);
+                    seed_addrs.extend(addrs);
+                }
+                Err(_) => warn!("failed to discover addrs from {}", seed),
+            }
+        }
+
         debug!("discovered {} addrs from DNS seeds", seed_addrs.len());
         seed_addrs.shuffle(&mut thread_rng());
-        let mut addrs = self.addrs.lock().await;
+        let mut addrs = self.addrs.lock();
         for addr in seed_addrs {
             addrs.insert(addr);
         }
     }
 
-    fn maintain_peers(self) {
-        tokio::spawn(async move {
-            let mut interval = interval(Duration::from_secs(5));
-            loop {
-                interval.tick().await;
-                self.refill_peers().await;
-            }
-        });
-    }
-
-    async fn refill_peers(&self) {
-        let mut peers = self.peers.write().await;
-        let mut addrs = self.addrs.lock().await;
-
-        let need = self.max_outbound - peers.len();
-
-        if need > 0 {
-            debug!("refilling peers {}/{}", peers.len(), self.max_outbound);
-            for _ in 0..need {
-                if let Some(addr) = addrs.pop_front() {
-                    debug!("connecting to {}", addr);
-                    let id = self.next_peer_id.fetch_add(1, Ordering::SeqCst);
-
-                    if peers.loader.is_none() {
-                        peers.loader = Some(id);
-                    }
-
-                    let peer =
-                        Peer::from_outbound(self.network_params.network, id, addr, self.clone());
-                    peers.insert(id, peer);
-                } else {
-                    drop(addrs);
-                    drop(peers);
-                    self.discover_dns_seeds().await;
-                    return;
-                }
-            }
+    async fn maintain_peers(self: Arc<Self>) {
+        let mut interval = interval(Duration::from_secs(5));
+        loop {
+            interval.tick().await;
+            self.refill_peers().await;
         }
     }
 
-    async fn handle_headers(&self, peer: &Peer, headers: Vec<BlockHeader>) -> EmptyResult {
+    async fn refill_peers(self: &Arc<Self>) {
+        let mut dns = false;
+
+        {
+            let mut peers = self.peers.write();
+            let mut addrs = self.addrs.lock();
+
+            let need = self.max_outbound - peers.len();
+
+            if need > 0 {
+                debug!("refilling peers {}/{}", peers.len(), self.max_outbound);
+                for _ in 0..need {
+                    if let Some(addr) = addrs.pop_front() {
+                        debug!("connecting to {}", addr);
+                        let id = self.next_peer_id.fetch_add(1, Ordering::SeqCst);
+
+                        if peers.loader.is_none() {
+                            peers.loader = Some(id);
+                        }
+
+                        let peer = Peer::from_outbound(
+                            self.network_params.network,
+                            id,
+                            addr,
+                            self.clone(),
+                        );
+                        peers.insert(id, peer);
+                    } else {
+                        dns = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if dns {
+            self.discover_dns_seeds().await;
+        }
+    }
+
+    fn handle_headers(&self, peer: &Peer, headers: Vec<BlockHeader>) -> EmptyResult {
         if headers.is_empty() {
             return Ok(());
         }
@@ -237,16 +204,14 @@ impl P2P {
             last = Some(header);
         }
 
-        let mut last = None;
-
         {
-            let mut chain = self.chain.lock().await;
-            let mut peer_best = peer.best.lock().await;
+            let mut chain = self.chain.write();
+            let mut peer_best = peer.best.lock();
 
             for header in &headers {
                 let hash = header.block_hash();
 
-                if chain.db.has_header(hash).unwrap() {
+                if chain.db.has_header(&hash) {
                     // We don't need these headers, but now we know this peer's tip hash
                     // Without a ChainEntry though, we don't know their height.
                     peer_best.hash = Some(hash);
@@ -254,10 +219,10 @@ impl P2P {
                     continue;
                 }
 
-                let entry = match chain.add_header(header) {
+                let entry = match chain.add_header(&header) {
                     Ok((entry, _prev)) => entry,
-                    Err(err) => {
-                        return Err(err);
+                    Err(_err) => {
+                        return Err(err_msg("bad header"));
                     }
                 };
 
@@ -266,8 +231,6 @@ impl P2P {
 
                 // Keep track of peer's best height.
                 peer_best.height = Some(entry.height);
-
-                last = Some(entry);
             }
         }
 
@@ -276,10 +239,9 @@ impl P2P {
         if headers.len() == 2000 {
             let locator = self
                 .chain
-                .lock()
-                .await
-                .get_locator(Some(last.expect("checked headers not empty").hash))?;
-            peer.send_get_headers(locator, None).await;
+                .read()
+                .get_locator(Some(headers[headers.len() - 1].block_hash()));
+            peer.send_get_headers(locator, None);
         }
 
         self.queue_resolve_headers();
@@ -289,66 +251,54 @@ impl P2P {
 }
 
 impl P2P {
-    fn resolve_headers_task(self) {
-        tokio::spawn(async move {
-            loop {
-                self.resolve_headers_notify.notified().await;
-                self.resolve_headers().await;
-            }
-        });
+    async fn resolve_headers_task(self: Arc<Self>) {
+        loop {
+            self.resolve_headers_notify.notified().await;
+            debug!("resolve headers");
+            self.resolve_headers();
+            debug!("resolve headers done");
+        }
     }
 
     fn queue_resolve_headers(&self) {
         self.resolve_headers_notify.notify();
     }
 
-    async fn resolve_headers(&self) {
-        {
-            let chain = self.chain.lock().await;
-            if !chain.is_recent() {
-                return;
-            }
-        }
-
-        if self.block_map.read().await.len() > BLOCK_DOWNLOAD_WINDOW - MAX_BLOCKS_PER_PEER {
+    fn resolve_headers(&self) {
+        if !self.chain.read().is_recent() {
             return;
         }
 
-        let peers = self.clone_peers().await;
-        for peer in peers {
-            self.resolve_headers_for_peer(&peer).await.unwrap();
+        if self.block_map.read().len() > BLOCK_DOWNLOAD_WINDOW - MAX_BLOCKS_PER_PEER {
+            return;
+        }
+
+        for peer in self.peers.read().peers.values() {
+            self.resolve_headers_for_peer(peer).unwrap();
         }
     }
 
-    async fn clone_peers(&self) -> Vec<Arc<Peer>> {
-        self.peers
-            .read()
-            .await
-            .peers
-            .values()
-            .map(|p| Arc::clone(p))
-            .collect::<Vec<_>>()
-    }
-
-    async fn resolve_headers_for_peer(&self, peer: &Peer) -> EmptyResult {
-        if !self.is_syncable(peer).await {
+    fn resolve_headers_for_peer(&self, peer: &Peer) -> EmptyResult {
+        if !self.is_syncable(peer) {
             return Ok(());
         }
 
-        if !peer.block_map.lock().await.is_empty() {
+        if !peer.block_map.lock().is_empty() {
             return Ok(());
         }
 
-        let best_hash = if let Some(best_hash) = peer.best.lock().await.hash {
-            best_hash
-        } else {
-            return self.send_sync(peer).await;
+        let best_hash = {
+            let b: Option<BlockHash> = peer.best.lock().hash;
+            match b {
+                None => return self.send_sync(peer),
+                Some(best_hash) => best_hash,
+            }
         };
 
         let best = {
-            let mut chain = self.chain.lock().await;
+            let chain = self.chain.read();
 
-            let best = if let Some(best) = chain.db.get_entry_by_hash(best_hash).unwrap() {
+            let best = if let Some(best) = chain.db.get_entry_by_hash(&best_hash) {
                 *best
             } else {
                 return Ok(());
@@ -361,10 +311,10 @@ impl P2P {
             best
         };
 
-        let staller = self.get_next_blocks(peer, best).await?;
+        let staller = self.get_next_blocks(peer, best)?;
 
         if let Some(staller) = staller {
-            let peers = self.peers.read().await;
+            let peers = self.peers.read();
             let slow = peers.peers.get(&staller);
             if let Some(slow) = slow {
                 let stalling_since = slow.stalling_since.load(Ordering::SeqCst);
@@ -386,37 +336,33 @@ impl P2P {
         Ok(())
     }
 
-    async fn get_next_blocks(
-        &self,
-        peer: &Peer,
-        best: ChainEntry,
-    ) -> Result<Option<PeerId>, Error> {
+    fn get_next_blocks(&self, peer: &Peer, best: ChainEntry) -> Result<Option<PeerId>, Error> {
         let mut items = vec![];
         let mut saved = vec![];
         let mut waiting = None;
         let mut staller = None;
 
         {
-            let mut chain = self.chain.lock().await;
-            let mut common = peer.common.lock().await;
+            let chain = self.chain.read();
+            let mut common = peer.common.lock();
 
             if common.hash.is_none() {
                 let common_height = std::cmp::min(chain.height, best.height);
                 let common_entry = chain
                     .db
-                    .get_entry_by_height(common_height)?
+                    .get_entry_by_height(&common_height)
                     .expect("height is at most chain height so entry must exist");
                 common.height = Some(common_height);
                 common.hash = Some(common_entry.hash);
             }
 
-            let mut walker = *chain
+            let mut walker = chain
                 .db
-                .get_entry_by_hash(common.hash.expect("common hash set above"))?
+                .get_entry_by_hash(&common.hash.expect("common hash set above"))
                 .expect("common hash so must have that hash");
 
             walker = chain
-                .common_ancestor(walker, best)?
+                .common_ancestor(&walker, &best)
                 .expect("have block in common so must be an ancestor");
 
             common.hash = Some(walker.hash);
@@ -426,13 +372,13 @@ impl P2P {
                 common.height.expect("set when common hash set") as usize + BLOCK_DOWNLOAD_WINDOW;
             let max_height = std::cmp::min(best.height, (end_height as u32) + 1);
 
-            let block_map = self.block_map.read().await;
-            let verifying = self.verifying.read().await;
+            let block_map = self.block_map.read();
+            let verifying = self.verifying.read();
 
             while walker.height < max_height {
                 let entries = chain
                     .db
-                    .get_next_path(best, walker.height, MAX_BLOCKS_PER_PEER)?;
+                    .get_next_path(&best, walker.height, MAX_BLOCKS_PER_PEER);
 
                 if entries.is_empty() {
                     break;
@@ -455,7 +401,7 @@ impl P2P {
                     }
 
                     // We have verified this block already (even if pruned).
-                    if chain.db.is_main_chain(entry)? {
+                    if chain.db.is_main_chain(entry) {
                         common.hash = Some(entry.hash);
                         common.height = Some(entry.height);
                         continue;
@@ -466,8 +412,8 @@ impl P2P {
                     }
 
                     // We have this block already.
-                    if chain.db.has_block(entry.hash).await? {
-                        saved.push(*entry);
+                    if chain.db.has_block(entry.hash)? {
+                        saved.push(**entry);
                         continue;
                     }
 
@@ -496,45 +442,40 @@ impl P2P {
                     break;
                 }
 
-                walker = *entries.back().expect("non empty checked above");
+                walker = entries.back().expect("non empty checked above");
             }
         }
 
         if !saved.is_empty() {
-            self.attach_block(saved[0]).await;
+            self.attach_block(saved[0]);
         }
 
         if items.is_empty() {
             return Ok(staller);
         }
 
-        self.get_block(peer, items).await;
+        self.get_block(peer, items);
 
         Ok(staller)
     }
 
-    async fn attach_block(&self, entry: ChainEntry) {
-        self.chain
-            .lock()
-            .await
-            .attach(entry)
-            .await
-            .expect("bad block");
+    fn attach_block(&self, entry: ChainEntry) {
+        self.chain.write().attach(entry);
     }
 
-    async fn get_block(&self, peer: &Peer, hashes: Vec<BlockHash>) {
+    fn get_block(&self, peer: &Peer, hashes: Vec<BlockHash>) {
         let mut items = vec![];
         let now = util::now();
 
         {
-            let chain = self.chain.lock().await;
-            let mut peer_block_map = peer.block_map.lock().await;
-            let mut block_map = self.block_map.write().await;
-            let verifying = self.verifying.read().await;
+            let chain = self.chain.read();
+            let mut peer_block_map = peer.block_map.lock();
+            let mut block_map = self.block_map.write();
+            let verifying = self.verifying.read();
 
             for hash in hashes {
                 if block_map.contains_key(&hash)
-                    || chain.db.has_block(hash).await.unwrap()
+                    || chain.db.has_block(hash).unwrap()
                     || verifying.contains(&hash)
                 {
                     continue;
@@ -560,19 +501,18 @@ impl P2P {
 
         peer.send(NetworkMessage::GetData(
             items.into_iter().map(Inventory::WitnessBlock).collect(),
-        ))
-        .await;
+        ));
 
         peer.block_time
             .store(util::now() as usize, Ordering::SeqCst);
     }
 
-    async fn handle_block(&self, peer: &Peer, block: Block) -> EmptyResult {
+    fn handle_block(&self, peer: &Peer, block: Block) -> EmptyResult {
         let hash = block.block_hash();
 
-        peer.block_map.lock().await.remove(&hash);
+        peer.block_map.lock().remove(&hash);
 
-        let was_requested = self.block_map.read().await.contains_key(&hash);
+        let was_requested = self.block_map.write().remove(&hash).is_some();
 
         if !was_requested {
             trace!("destroy: block {} not requested {} ", hash, peer.addr);
@@ -586,20 +526,15 @@ impl P2P {
 
         peer.stalling_since.store(0, Ordering::SeqCst);
 
-        let mut chain = self.chain.lock().await;
+        let mut chain = self.chain.write();
 
-        {
-            self.block_map.write().await.remove(&hash);
-            self.verifying.write().await.insert(hash);
-        }
-
-        chain.add(block).await.unwrap();
+        chain.add(block).unwrap();
         self.queue_resolve_headers();
 
         Ok(())
     }
 
-    async fn handle_get_headers(
+    fn handle_get_headers(
         &self,
         peer: &Peer,
         locator: Vec<BlockHash>,
@@ -614,23 +549,23 @@ impl P2P {
         let mut headers = vec![];
 
         {
-            let mut chain = self.chain.lock().await;
+            let chain = self.chain.read();
 
             let hash = if locator.is_empty() {
                 Some(BlockHash::default())
             } else {
-                let common = chain.find_locator(locator)?;
+                let common = chain.find_locator(&locator);
                 chain.db.get_next_hash(common)?
             };
 
             let mut entry = if let Some(hash) = hash {
-                chain.db.get_entry_by_hash(hash)?.copied()
+                chain.db.get_entry_by_hash(&hash)
             } else {
                 None
             };
 
             while let Some(e) = entry {
-                headers.push(e.to_header());
+                headers.push(e.into());
 
                 if let Some(stop) = stop {
                     if e.hash == stop {
@@ -642,16 +577,16 @@ impl P2P {
                     break;
                 }
 
-                entry = chain.db.get_next(&e)?.copied();
+                entry = chain.db.get_next(&e)?;
             }
         }
 
-        peer.send(NetworkMessage::Headers(headers)).await;
+        peer.send(NetworkMessage::Headers(headers));
 
         Ok(())
     }
 
-    async fn is_syncable(&self, peer: &Peer) -> bool {
+    fn is_syncable(&self, peer: &Peer) -> bool {
         if peer.destroyed.load(Ordering::SeqCst) {
             return false;
         }
@@ -665,8 +600,8 @@ impl P2P {
         }
 
         {
-            let chain = self.chain.lock().await;
-            let peers = self.peers.read().await;
+            let chain = self.chain.read();
+            let peers = self.peers.read();
             if peers.loader != Some(peer.id) && !chain.is_recent() {
                 return false;
             }
@@ -675,39 +610,47 @@ impl P2P {
         true
     }
 
-    async fn send_sync(&self, peer: &Peer) -> EmptyResult {
+    fn send_sync(&self, peer: &Peer) -> EmptyResult {
         if peer.syncing.load(Ordering::SeqCst) {
             return Ok(());
         }
 
-        if !self.is_syncable(peer).await {
+        if !self.is_syncable(peer) {
             return Ok(());
         }
 
         peer.syncing.store(true, Ordering::SeqCst);
 
         let locator = {
-            let mut chain = self.chain.lock().await;
+            let chain = self.chain.read();
             let best = chain.most_work();
-            let prev = chain.db.get_entry_by_hash(best.prev_block)?.copied();
-            chain.get_locator(Some(prev.unwrap_or(best).hash))?
+            let prev = chain.db.get_entry_by_hash(&best.prev_block);
+            chain.get_locator(prev.map(|p| p.hash))
         };
 
-        peer.send_get_headers(locator, None).await;
+        // let c = self.chain.read().get_locator(None);
+        use std::str::FromStr;
+        peer.send_get_headers(
+            vec![BlockHash::from_str(
+                "0000000000000000000a74566ea3048c3acd4b90a200a991070799b3696c0eb6",
+            )
+            .unwrap()],
+            None,
+        );
 
         Ok(())
     }
 }
 
 impl P2P {
-    pub async fn handle_packet(&self, peer: &Peer, packet: NetworkMessage) {
+    pub fn handle_packet(&self, peer: &Peer, packet: NetworkMessage) {
         let res = match packet {
-            NetworkMessage::Headers(headers) => self.handle_headers(peer, headers).await,
-            NetworkMessage::Block(block) => self.handle_block(peer, block).await,
-            NetworkMessage::GetHeaders(msg) => {
-                self.handle_get_headers(peer, msg.locator_hashes, msg.stop_hash)
-                    .await
-            }
+            NetworkMessage::Headers(headers) => self.handle_headers(peer, headers),
+            // NetworkMessage::Block(block) => self.handle_block(peer, block),
+            // NetworkMessage::GetHeaders(msg) => {
+            //     self.handle_get_headers(peer, msg.locator_hashes, msg.stop_hash)
+            //         .await
+            // }
             _ => Ok(()),
         };
         if let Err(err) = res {
@@ -716,11 +659,11 @@ impl P2P {
         }
     }
 
-    pub async fn handle_close(&self, peer: &Peer, _connected: bool) {
+    pub fn handle_close(&self, peer: &Peer, _connected: bool) {
         debug!("disconnected from {}", peer.addr);
 
         {
-            let mut peers = self.peers.write().await;
+            let mut peers = self.peers.write();
             peers.remove(peer.id);
             if peers.loader == Some(peer.id) {
                 peers.loader = None;
@@ -728,10 +671,10 @@ impl P2P {
         }
 
         {
-            let peer_block_map = peer.block_map.lock().await.drain().collect::<Vec<_>>();
-            let mut block_map = self.block_map.write().await;
+            let mut peer_block_map = peer.block_map.lock();
+            let mut block_map = self.block_map.write();
 
-            for (hash, _) in peer_block_map {
+            for (hash, _) in peer_block_map.drain() {
                 block_map.remove(&hash);
             }
         }
@@ -739,10 +682,10 @@ impl P2P {
         self.queue_resolve_headers();
     }
 
-    pub async fn handle_open(&self, peer: &Peer) {
+    pub fn handle_open(&self, peer: &Peer) {
         debug!("handshake complete with {}", peer.addr);
-        peer.send(NetworkMessage::SendHeaders).await;
-        if self.send_sync(peer).await.is_err() {
+        peer.send(NetworkMessage::SendHeaders);
+        if self.send_sync(peer).is_err() {
             trace!("destroy: send sync error {} ", peer.addr);
 
             peer.destroy.store(true, Ordering::SeqCst);
@@ -750,15 +693,13 @@ impl P2P {
         self.queue_resolve_headers();
     }
 
-    pub async fn handle_error(&self, peer: &Peer, error: &Error) {
+    pub fn handle_error(&self, peer: &Peer, error: &Error) {
         debug!("error: {} from peer {}", error, peer.addr);
     }
 
-    pub async fn handle_ban(&self, _peer: &Peer) {}
+    pub fn handle_ban(&self, _peer: &Peer) {}
 
-    pub async fn handle_connect(&self, peer: &Peer) {
+    pub fn handle_connect(&self, peer: &Peer) {
         debug!("connected to {}", peer.addr);
     }
 }
-
-impl ChainListener for P2P {}

@@ -49,6 +49,22 @@ bitflags::bitflags! {
         const VERIFY_NULLFAIL = 1 << 14;
         const VERIFY_WITNESS_PUBKEYTYPE = 1 << 15;
         const VERIFY_CONST_SCRIPTCODE = 1 << 16;
+        const STANDARD_VERIFY_FLAGS = Self::VERIFY_P2SH.bits()
+        | Self::VERIFY_STRICTENC.bits()
+        | Self::VERIFY_DERSIG.bits()
+        | Self::VERIFY_LOW_S.bits()
+        | Self::VERIFY_NULLDUMMY.bits()
+        | Self::VERIFY_DISCOURAGE_UPGRADABLE_NOPS.bits()
+        | Self::VERIFY_CLEANSTACK.bits()
+        | Self::VERIFY_MINIMALIF.bits()
+        | Self::VERIFY_NULLFAIL.bits()
+        | Self::VERIFY_CHECKLOCKTIMEVERIFY.bits()
+        | Self::VERIFY_CHECKSEQUENCEVERIFY.bits()
+        | Self::VERIFY_WITNESS.bits()
+        | Self::VERIFY_DISCOURAGE_UPGRADABLE_WITNESS_PROGRAM.bits()
+        | Self::VERIFY_WITNESS_PUBKEYTYPE.bits()
+        | Self::VERIFY_CONST_SCRIPTCODE.bits()
+        | Self::VERIFY_MINIMALDATA.bits();
         // NOT YET STANDARD
         const VERIFY_TAPROOT = 1 << 17;
         const VERIFY_DISCOURAGE_UPGRADABLE_TAPROOT_VERSION = 1 << 18;
@@ -70,6 +86,7 @@ bitflags::bitflags! {
         const NONE = 0;
         const VERIFY_SEQUENCE = 1 << 0;
         const MEDIAN_TIME_PAST = 1 << 1;
+        const STANDARD_LOCKTIME_FLAGS = Self::VERIFY_SEQUENCE.bits() | Self::MEDIAN_TIME_PAST.bits();
     }
 }
 

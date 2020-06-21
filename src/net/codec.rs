@@ -60,11 +60,10 @@ impl Decoder for BitcoinCodec {
     }
 }
 
-impl Encoder for BitcoinCodec {
-    type Item = NetworkMessage;
+impl Encoder<NetworkMessage> for BitcoinCodec {
     type Error = encode::Error;
 
-    fn encode(&mut self, message: Self::Item, buf: &mut BytesMut) -> Result<(), Self::Error> {
+    fn encode(&mut self, message: NetworkMessage, buf: &mut BytesMut) -> Result<(), Self::Error> {
         let serialized: Vec<u8> = encode::serialize(&RawNetworkMessage {
             magic: self.network.magic(),
             payload: message,

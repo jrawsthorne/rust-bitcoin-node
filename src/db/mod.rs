@@ -3,7 +3,7 @@ mod disk;
 mod key;
 mod value;
 
-use crate::util::EmptyResult;
+use crate::error::DBError;
 pub use batch::Batch;
 pub use disk::DiskDatabase;
 pub use disk::{
@@ -12,14 +12,13 @@ pub use disk::{
     COL_CHAIN_NEXT_HASHES, COL_CHAIN_SKIP, COL_CHAIN_WORK, COL_COIN, COL_MISC, COL_NEXT_HASH,
     COL_VERSION_BIT_STATE, KEY_CHAIN_STATE, KEY_TIP,
 };
-use failure::Error;
 pub use key::Key;
 pub use value::DBValue;
 
 pub trait Database {
-    fn insert<V: DBValue>(&self, key: Key, value: &V) -> EmptyResult;
-    fn remove(&self, key: Key) -> EmptyResult;
-    fn get<V: DBValue>(&self, key: Key) -> Result<Option<V>, Error>;
-    fn write_batch(&self, batch: Batch) -> EmptyResult;
-    fn has(&self, key: Key) -> Result<bool, Error>;
+    fn insert<V: DBValue>(&self, key: Key, value: &V) -> Result<(), DBError>;
+    fn remove(&self, key: Key) -> Result<(), DBError>;
+    fn get<V: DBValue>(&self, key: Key) -> Result<Option<V>, DBError>;
+    fn write_batch(&self, batch: Batch) -> Result<(), DBError>;
+    fn has(&self, key: Key) -> Result<bool, DBError>;
 }

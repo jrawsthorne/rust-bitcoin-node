@@ -1,8 +1,7 @@
 use super::CoinEntry;
 use crate::blockchain::ChainDB;
-use crate::util::EmptyResult;
+use crate::error::DBError;
 use bitcoin::{OutPoint, Transaction, TxOut};
-use failure::{bail, Error};
 use std::collections::{hash_map::Entry, HashMap};
 
 /// A view of the UTXO set
@@ -16,26 +15,19 @@ impl CoinView {
     /// Add a new transaction to the view
     pub fn add_tx(&mut self, tx: &Transaction, height: u32) {
         let txid = tx.txid();
-        tx.output
-            .iter()
-            .enumerate()
-            .filter_map(|(index, output)| {
-                if output.script_pubkey.is_provably_unspendable() {
-                    None
-                } else {
-                    Some(index)
-                }
-            })
-            .for_each(|index| {
-                let entry = CoinEntry::from_tx(tx, index as u32, height);
-                self.map.insert(
-                    OutPoint {
-                        vout: index as u32,
-                        txid,
-                    },
-                    entry,
-                );
-            })
+
+        for (index, output) in tx.output.iter().enumerate() {
+            if output.script_pubkey.is_provably_unspendable() {
+                continue;
+            }
+            self.map.insert(
+                OutPoint {
+                    vout: index as u32,
+                    txid,
+                },
+                CoinEntry::from_tx(tx, index as u32, height),
+            );
+        }
     }
 
     pub fn get_output(&self, prevout: &OutPoint) -> Option<&TxOut> {
@@ -49,9 +41,9 @@ impl CoinView {
     /// Get a coin from the coin view or from the database if it exists
     pub fn read_coin(
         &mut self,
-        db: &mut ChainDB,
+        db: &ChainDB,
         prevout: OutPoint,
-    ) -> Result<Option<&mut CoinEntry>, Error> {
+    ) -> Result<Option<&mut CoinEntry>, DBError> {
         Ok(match self.map.entry(prevout) {
             Entry::Occupied(entry) => Some(entry.into_mut()),
             Entry::Vacant(entry) => db
@@ -62,19 +54,16 @@ impl CoinView {
 
     /// Get every unspent output for the inputs of a transaction
     /// and ensure that the output exists and was not spent in a previous input
-    pub fn spend_inputs(&mut self, db: &mut ChainDB, tx: &Transaction) -> EmptyResult {
+    pub fn spend_inputs(&mut self, db: &ChainDB, tx: &Transaction) -> Result<(), DBError> {
         for input in &tx.input {
             let coin = self.read_coin(db, input.previous_output)?;
             match coin {
                 Some(coin) => {
-                    if coin.spent {
-                        bail!("Coin spent");
-                    }
+                    // should have already been checked
+                    assert!(!coin.spent);
                     coin.spent = true;
                 }
-                None => {
-                    bail!("Coin spent or didn't exist");
-                }
+                None => unreachable!(), // should have already been checked,
             }
         }
         Ok(())

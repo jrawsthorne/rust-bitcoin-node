@@ -1,3 +1,3 @@
 mod mempool;
 
-pub use mempool::{MempoolEntry, MempoolListener, TxMemPool};
+pub use mempool::{MemPool, MemPoolEntry};

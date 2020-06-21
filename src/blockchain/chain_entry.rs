@@ -16,6 +16,7 @@ pub struct ChainEntry {
     pub height: u32,
     /// Cumulative mining work required to reach this block
     pub chainwork: Uint256,
+    pub skip: BlockHash,
 }
 
 impl ChainEntry {
@@ -37,6 +38,7 @@ impl ChainEntry {
                 Some(prev) => prev.chainwork + block_header.work(),
                 None => block_header.work(),
             },
+            skip: Default::default(),
         }
     }
 
@@ -50,20 +52,22 @@ impl ChainEntry {
         self.height == 0
     }
 
-    pub fn to_header(&self) -> BlockHeader {
-        BlockHeader {
-            version: self.version,
-            prev_blockhash: self.prev_block,
-            merkle_root: self.merkle_root,
-            time: self.time,
-            bits: self.bits,
-            nonce: self.nonce,
-        }
-    }
-
     // does this entry signal for a certain version bit
     pub fn has_bit(&self, bit: u8) -> bool {
         (self.version & VERSIONBITS_TOP_MASK) == VERSIONBITS_TOP_BITS
             && (self.version & (1 << bit)) != 0
+    }
+}
+
+impl From<&ChainEntry> for BlockHeader {
+    fn from(entry: &ChainEntry) -> Self {
+        Self {
+            version: entry.version,
+            prev_blockhash: entry.prev_block,
+            merkle_root: entry.merkle_root,
+            time: entry.time,
+            bits: entry.bits,
+            nonce: entry.nonce,
+        }
     }
 }

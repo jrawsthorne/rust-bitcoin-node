@@ -1,21 +1,13 @@
-use super::{BIP9Deployment, TimeData};
-use bitcoin::hashes::{hex::FromHex, Hash};
+use super::{BIP9Deployment, StartTime, TimeData, Timeout};
 use bitcoin::{
     consensus::params::Params, network::constants::Network, util::uint::Uint256, BlockHash,
     BlockHeader,
 };
+use maplit::hashmap;
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
 };
-
-fn b(hash: &str) -> BlockHash {
-    BlockHash::from_slice(&Vec::from_hex(hash).unwrap()).unwrap()
-}
-
-fn h<T: std::hash::Hash + Eq, B>(vec: Vec<(T, B)>) -> HashMap<T, B> {
-    vec.into_iter().collect::<HashMap<_, _>>()
-}
 
 #[derive(Clone)]
 pub struct NetworkParams {
@@ -74,6 +66,10 @@ impl NetworkParams {
         let pow_limit_bits = BlockHeader::compact_target_from_u256(&pow_limit);
         let pow_target_spacing = pow_target_spacing as u32;
         let time = Arc::new(Mutex::new(TimeData::default()));
+        fn b(hash: &str) -> BlockHash {
+            use std::str::FromStr;
+            BlockHash::from_str(hash).unwrap()
+        }
         match network {
             Network::Bitcoin => Self {
                 network,
@@ -100,38 +96,20 @@ impl NetworkParams {
                 allow_min_difficulty_blocks,
                 pow_target_spacing,
                 max_tip_age: 24 * 60 * 60,
-                time: time.clone(),
-                deployments: h(vec![
-                    (
-                        "segwit",
-                        BIP9Deployment::new("segwit", 1, 1462060800, 1493596800),
-                    ),
-                    (
-                        "taproot",
-                        BIP9Deployment::new("taproot", 2, 1199145601, 1230767999),
-                    ),
-                    (
-                        "ctv",
-                        // March 1, 2020 - March 1, 2021
-                        BIP9Deployment::new("ctv", 5, 1583020800, 1614556800),
-                    ),
-                    (
-                        "dummy",
-                        BIP9Deployment::new("dummy", 28, 1199145601, 1230767999),
-                    ),
-                ]),
+                time,
+                deployments: hashmap! {
+                    "segwit"    => BIP9Deployment::new("segwit", 1, StartTime::StartTime(1462060800), Timeout::Timeout(1493596800)),
+                    "taproot"   => BIP9Deployment::new("taproot", 2, StartTime::StartTime(1199145601), Timeout::Timeout(1230767999)),
+                                // March 1, 2020 - March 1, 2021
+                    "ctv"       => BIP9Deployment::new("ctv", 5, StartTime::StartTime(1583020800), Timeout::Timeout(1614556800)),
+                    "dummy"     => BIP9Deployment::new("dummy", 28, StartTime::StartTime(1199145601), Timeout::Timeout(1230767999)),
+                },
                 rule_change_activation_threshold,
                 miner_confirmation_window,
-                bip30: h(vec![
-                    (
-                        91842,
-                        b("eccae000e3c8e4e093936360431f3b7603c563c1ff6181390a4d0a0000000000"),
-                    ),
-                    (
-                        91880,
-                        b("21d77ccb4c08386a04ac0196ae10f6a1d2c2a377558ca190f143070000000000"),
-                    ),
-                ]),
+                bip30: hashmap! {
+                    91842 => b("00000000000a4d0a398161ffc163c503763b1f4360639393e0e4c8e300e0caec"),
+                    91880 => b("00000000000743f190a18c5577a3c2d2a1f610ae9601ac046a38084ccb7cd721")
+                },
             },
             Network::Testnet => Self {
                 network,
@@ -156,18 +134,12 @@ impl NetworkParams {
                 allow_min_difficulty_blocks,
                 pow_target_spacing,
                 max_tip_age: 24 * 60 * 60,
-                time: time.clone(),
-                deployments: h(vec![
-                    (
-                        "taproot",
-                        BIP9Deployment::new("taproot", 2, 1199145601, 1230767999),
-                    ),
-                    ("ctv", BIP9Deployment::new("ctv", 5, 1199145601, 1230767999)),
-                    (
-                        "dummy",
-                        BIP9Deployment::new("dummy", 28, 1199145601, 1230767999),
-                    ),
-                ]),
+                time,
+                deployments: hashmap! {
+                    "taproot"   => BIP9Deployment::new("taproot", 2, StartTime::StartTime(1199145601), Timeout::Timeout(1230767999)),
+                    "ctv"       => BIP9Deployment::new("ctv", 5, StartTime::StartTime(1199145601), Timeout::Timeout(1230767999)),
+                    "dummy"     => BIP9Deployment::new("dummy", 28, StartTime::StartTime(1199145601), Timeout::Timeout(1230767999))
+                },
                 rule_change_activation_threshold,
                 miner_confirmation_window,
                 bip30: Default::default(),
@@ -190,31 +162,12 @@ impl NetworkParams {
                 allow_min_difficulty_blocks,
                 pow_target_spacing,
                 max_tip_age: 0xffffffff,
-                time: time.clone(),
-                deployments: h(vec![
-                    (
-                        "taproot",
-                        BIP9Deployment::new(
-                            "taproot",
-                            2,
-                            BIP9Deployment::ALWAYS_ACTIVE,
-                            BIP9Deployment::NO_TIMEOUT,
-                        ),
-                    ),
-                    (
-                        "ctv",
-                        BIP9Deployment::new(
-                            "ctv",
-                            2,
-                            BIP9Deployment::ALWAYS_ACTIVE,
-                            BIP9Deployment::NO_TIMEOUT,
-                        ),
-                    ),
-                    (
-                        "dummy",
-                        BIP9Deployment::new("dummy", 28, 0, BIP9Deployment::NO_TIMEOUT),
-                    ),
-                ]),
+                time,
+                deployments: hashmap! {
+                    "taproot"   => BIP9Deployment::new("taproot", 2, StartTime::AlwaysActive, Timeout::NoTimeout),
+                    "ctv"       => BIP9Deployment::new("ctv", 5, StartTime::AlwaysActive, Timeout::NoTimeout),
+                    "dummy"     => BIP9Deployment::new("dummy", 28, StartTime::StartTime(0), Timeout::NoTimeout)
+                },
                 rule_change_activation_threshold,
                 miner_confirmation_window,
                 bip30: Default::default(),

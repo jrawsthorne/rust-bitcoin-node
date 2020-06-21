@@ -1,23 +1,18 @@
-use super::{codec::BitcoinCodec, Peer};
-use bitcoin::{network::message::NetworkMessage, Network};
-use failure::{format_err, Error};
-use futures::StreamExt;
-use futures_util::SinkExt;
-use std::net::Shutdown;
+use super::Peer;
+use bitcoin::{
+    consensus::{deserialize_partial, serialize},
+    network::message::{NetworkMessage, RawNetworkMessage},
+    Network,
+};
+use bytes::Buf;
+use bytes::BytesMut;
+use failure::format_err;
+use log::debug;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::prelude::*;
 use tokio::task::JoinHandle;
 use tokio::{net::TcpStream, sync::mpsc};
-use tokio_util::codec::Framed;
-
-/// Trait that handles TCP stream events
-#[async_trait::async_trait]
-pub trait ConnectionListener: Send + Sync + 'static {
-    async fn handle_connect(&self);
-    async fn handle_close(&self);
-    async fn handle_packet(&self, packet: NetworkMessage);
-    async fn handle_error(&self, error: &Error);
-}
 
 pub struct Connection;
 
@@ -32,16 +27,16 @@ impl Connection {
             match tokio::time::timeout(Duration::from_secs(10), TcpStream::connect(peer.addr)).await
             {
                 Ok(Ok(stream)) => {
-                    peer.handle_connect().await;
+                    peer.handle_connect();
                     Connection::run(network, peer, rx, stream, close_connection_rx).await;
                 }
                 Ok(Err(error)) => {
                     let error = format_err!("connection error: {}", error);
-                    peer.handle_error(&error).await;
+                    peer.handle_error(&error);
                 }
                 Err(_) => {
                     let error = format_err!("connection error: timeout");
-                    peer.handle_error(&error).await;
+                    peer.handle_error(&error);
                 }
             }
         })
@@ -63,42 +58,64 @@ impl Connection {
         network: Network,
         peer: Arc<Peer>,
         mut rx: mpsc::UnboundedReceiver<NetworkMessage>,
-        stream: TcpStream,
+        mut stream: TcpStream,
         mut close_connection_rx: mpsc::UnboundedReceiver<()>,
     ) {
-        let stream = Framed::new(stream, BitcoinCodec::new(network));
-        let (mut w, mut r) = stream.split();
+        stream.set_nodelay(true).unwrap();
+
+        let (reader, writer) = stream.split();
+        let mut reader = tokio::io::BufReader::new(reader);
+        let mut writer = tokio::io::BufWriter::new(writer);
 
         let recv_message = async {
             while let Some(message) = rx.recv().await {
-                if let Err(error) = w.send(message).await {
-                    peer.handle_error(&error.into()).await;
+                let bytes = serialize(&RawNetworkMessage {
+                    magic: network.magic(),
+                    payload: message,
+                });
+                if let Err(error) = writer.write_all(&bytes).await {
+                    peer.handle_error(&error.into());
+                    break;
+                }
+                if let Err(error) = writer.flush().await {
+                    peer.handle_error(&error.into());
                     break;
                 }
             }
         };
 
         let recv_socket = async {
-            while let Some(message) = r.next().await {
-                match message {
-                    Ok(message) => {
-                        let peer = Arc::clone(&peer);
-                        tokio::spawn(async move {
-                            peer.handle_packet(message).await;
-                        });
+            let mut buf = BytesMut::with_capacity(8_000);
+            loop {
+                match reader.read_buf(&mut buf).await {
+                    Ok(i) => {
+                        if i == 0 {
+                            // clean shutdown
+                            return peer.handle_close();
+                        }
                     }
                     Err(error) => {
-                        peer.handle_error(&error.into()).await;
+                        peer.handle_error(&error.into());
+                        return;
+                    }
+                }
+                match deserialize_partial::<RawNetworkMessage>(buf.bytes()) {
+                    Ok((message, index)) => {
+                        buf.advance(index);
+                        peer.handle_packet(message.payload);
+                    }
+                    Err(bitcoin::consensus::encode::Error::Io(ref err))
+                        if err.kind() == io::ErrorKind::UnexpectedEof => {}
+                    Err(error) => {
+                        peer.handle_error(&error.into());
                         return;
                     }
                 }
             }
-            // peer cleanly closed the connection
-            peer.handle_close().await;
         };
 
         let recv_close = async {
-            close_connection_rx.next().await;
+            close_connection_rx.recv().await;
         };
 
         tokio::select! {
@@ -107,9 +124,6 @@ impl Connection {
             _ = recv_close => ()
         };
 
-        // shutdown stream cleanly ignoring error
-        // rx will be closed on drop
-
-        let _ = w.reunite(r).unwrap().get_mut().shutdown(Shutdown::Both);
+        // stream shutdown when r & w dropped
     }
 }

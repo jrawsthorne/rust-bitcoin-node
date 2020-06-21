@@ -3,25 +3,24 @@ use crate::blockstore::{BlockRecord, FileRecord};
 use crate::coins::CoinEntry;
 use crate::protocol::ThresholdState;
 use bitcoin::{
-    consensus::{Decodable, Encodable},
+    consensus::{encode, Decodable, Encodable},
     util::uint::Uint256,
     BlockHash, TxMerkleNode, TxOut,
 };
-use failure::Error;
 use std::io::Cursor;
 
 pub trait DBValue: Sized {
-    fn decode(bytes: &[u8]) -> Result<Self, Error>;
-    fn encode(&self) -> Result<Vec<u8>, Error>;
+    fn decode(bytes: &[u8]) -> Result<Self, encode::Error>;
+    fn encode(&self) -> Result<Vec<u8>, encode::Error>;
 }
 
 impl<T: Decodable + Encodable> DBValue for T {
-    fn decode(bytes: &[u8]) -> Result<T, Error> {
+    fn decode(bytes: &[u8]) -> Result<T, encode::Error> {
         let decoder = Cursor::new(bytes);
         Ok(T::consensus_decode(decoder)?)
     }
 
-    fn encode(&self) -> Result<Vec<u8>, Error> {
+    fn encode(&self) -> Result<Vec<u8>, encode::Error> {
         let mut encoder = Cursor::new(Vec::new());
         T::consensus_encode(self, &mut encoder)?;
         Ok(encoder.into_inner())
@@ -29,18 +28,18 @@ impl<T: Decodable + Encodable> DBValue for T {
 }
 
 impl DBValue for ThresholdState {
-    fn decode(bytes: &[u8]) -> Result<Self, Error> {
+    fn decode(bytes: &[u8]) -> Result<Self, encode::Error> {
         Ok(match bytes[0] {
             0 => ThresholdState::Defined,
             1 => ThresholdState::Started,
             2 => ThresholdState::LockedIn,
             3 => ThresholdState::Active,
             4 => ThresholdState::Failed,
-            _ => failure::bail!("bad state"),
+            _ => unreachable!(),
         })
     }
 
-    fn encode(&self) -> Result<Vec<u8>, Error> {
+    fn encode(&self) -> Result<Vec<u8>, encode::Error> {
         Ok(vec![match self {
             ThresholdState::Defined => 0,
             ThresholdState::Started => 1,
@@ -52,7 +51,7 @@ impl DBValue for ThresholdState {
 }
 
 impl DBValue for ChainEntry {
-    fn decode(bytes: &[u8]) -> Result<Self, Error> {
+    fn decode(bytes: &[u8]) -> Result<Self, encode::Error> {
         let mut decoder = Cursor::new(bytes);
         let hash = BlockHash::consensus_decode(&mut decoder)?;
         let version = u32::consensus_decode(&mut decoder)?;
@@ -63,6 +62,7 @@ impl DBValue for ChainEntry {
         let nonce = u32::consensus_decode(&mut decoder)?;
         let height = u32::consensus_decode(&mut decoder)?;
         let chainwork = Uint256::consensus_decode(&mut decoder)?;
+        let skip = BlockHash::consensus_decode(&mut decoder)?;
         Ok(ChainEntry {
             hash,
             version,
@@ -73,10 +73,11 @@ impl DBValue for ChainEntry {
             nonce,
             height,
             chainwork,
+            skip,
         })
     }
 
-    fn encode(&self) -> Result<Vec<u8>, Error> {
+    fn encode(&self) -> Result<Vec<u8>, encode::Error> {
         let mut encoder = Cursor::new(Vec::with_capacity(148));
         self.hash.consensus_encode(&mut encoder)?;
         self.version.consensus_encode(&mut encoder)?;
@@ -87,6 +88,7 @@ impl DBValue for ChainEntry {
         self.nonce.consensus_encode(&mut encoder)?;
         self.height.consensus_encode(&mut encoder)?;
         self.chainwork.consensus_encode(&mut encoder)?;
+        self.skip.consensus_encode(&mut encoder)?;
         Ok(encoder.into_inner())
     }
 }
@@ -95,7 +97,7 @@ pub static MAX_HEIGHT: u32 = u32::max_value();
 
 // TODO: Compress
 impl DBValue for CoinEntry {
-    fn decode(bytes: &[u8]) -> Result<Self, Error> {
+    fn decode(bytes: &[u8]) -> Result<Self, encode::Error> {
         let mut decoder = Cursor::new(bytes);
         let version = u32::consensus_decode(&mut decoder)?;
         let height = match u32::consensus_decode(&mut decoder)? {
@@ -114,7 +116,7 @@ impl DBValue for CoinEntry {
         })
     }
 
-    fn encode(&self) -> Result<Vec<u8>, Error> {
+    fn encode(&self) -> Result<Vec<u8>, encode::Error> {
         // version + height + coinbase + output value + output script + spent
         let len = 4 + 4 + 1 + 8 + self.output.script_pubkey.len() + 1;
         let mut encoder = Cursor::new(Vec::with_capacity(len));
@@ -131,7 +133,7 @@ impl DBValue for CoinEntry {
 }
 
 impl DBValue for ChainState {
-    fn decode(bytes: &[u8]) -> Result<Self, Error> {
+    fn decode(bytes: &[u8]) -> Result<Self, encode::Error> {
         let mut decoder = Cursor::new(bytes);
         let tip = BlockHash::consensus_decode(&mut decoder)?;
         let tx = u64::consensus_decode(&mut decoder)?;
@@ -146,7 +148,7 @@ impl DBValue for ChainState {
         })
     }
 
-    fn encode(&self) -> Result<Vec<u8>, Error> {
+    fn encode(&self) -> Result<Vec<u8>, encode::Error> {
         // length = tip + tx + coin + value
         let mut encoder = Cursor::new(Vec::with_capacity(32 + 8 + 8 + 8));
         self.tip.consensus_encode(&mut encoder)?;
@@ -158,7 +160,7 @@ impl DBValue for ChainState {
 }
 
 impl DBValue for FileRecord {
-    fn decode(bytes: &[u8]) -> Result<Self, Error> {
+    fn decode(bytes: &[u8]) -> Result<Self, encode::Error> {
         let mut decoder = Cursor::new(bytes);
         let blocks = u32::consensus_decode(&mut decoder)?;
         let used = u32::consensus_decode(&mut decoder)?;
@@ -170,7 +172,7 @@ impl DBValue for FileRecord {
         })
     }
 
-    fn encode(&self) -> Result<Vec<u8>, Error> {
+    fn encode(&self) -> Result<Vec<u8>, encode::Error> {
         let mut encoder = Cursor::new(Vec::with_capacity(12));
         self.blocks.consensus_encode(&mut encoder)?;
         self.used.consensus_encode(&mut encoder)?;
@@ -180,7 +182,7 @@ impl DBValue for FileRecord {
 }
 
 impl DBValue for BlockRecord {
-    fn decode(bytes: &[u8]) -> Result<Self, Error> {
+    fn decode(bytes: &[u8]) -> Result<Self, encode::Error> {
         let mut decoder = Cursor::new(bytes);
         let file = u32::consensus_decode(&mut decoder)?;
         let position = u32::consensus_decode(&mut decoder)?;
@@ -192,7 +194,7 @@ impl DBValue for BlockRecord {
         })
     }
 
-    fn encode(&self) -> Result<Vec<u8>, Error> {
+    fn encode(&self) -> Result<Vec<u8>, encode::Error> {
         let mut encoder = Cursor::new(Vec::with_capacity(12));
         self.file.consensus_encode(&mut encoder)?;
         self.position.consensus_encode(&mut encoder)?;

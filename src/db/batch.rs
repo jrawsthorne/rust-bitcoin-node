@@ -1,5 +1,5 @@
 use super::{DBValue, Key};
-use crate::util::EmptyResult;
+use bitcoin::consensus::encode;
 
 #[derive(Default)]
 pub struct Batch {
@@ -7,14 +7,13 @@ pub struct Batch {
 }
 
 impl Batch {
-    pub fn insert<V: DBValue>(&mut self, key: Key, value: &V) -> EmptyResult {
+    pub fn insert<V: DBValue>(&mut self, key: Key, value: &V) -> Result<(), encode::Error> {
         self.operations
             .push(Operation::Insert(key, value.encode()?));
         Ok(())
     }
-    pub fn remove(&mut self, key: Key) -> EmptyResult {
+    pub fn remove(&mut self, key: Key) {
         self.operations.push(Operation::Remove(key));
-        Ok(())
     }
 }
 

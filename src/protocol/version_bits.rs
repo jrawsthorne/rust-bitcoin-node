@@ -23,13 +23,25 @@ pub enum ThresholdState {
 #[derive(Debug, Copy, Clone)]
 pub struct BIP9Deployment {
     pub bit: u8,
-    pub start_time: i32,
-    pub timeout: u32,
+    pub start_time: StartTime,
+    pub timeout: Timeout,
     pub name: &'static str,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum StartTime {
+    AlwaysActive,
+    StartTime(u32),
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum Timeout {
+    NoTimeout,
+    Timeout(u32),
+}
+
 impl BIP9Deployment {
-    pub fn new(name: &'static str, bit: u8, start_time: i32, timeout: u32) -> Self {
+    pub fn new(name: &'static str, bit: u8, start_time: StartTime, timeout: Timeout) -> Self {
         Self {
             bit,
             start_time,
@@ -38,6 +50,17 @@ impl BIP9Deployment {
         }
     }
 
-    pub const NO_TIMEOUT: u32 = u32::max_value();
-    pub const ALWAYS_ACTIVE: i32 = -1;
+    pub fn always_active(&self) -> bool {
+        match &self.start_time {
+            StartTime::AlwaysActive => true,
+            _ => false,
+        }
+    }
+
+    pub fn no_timeout(&self) -> bool {
+        match self.timeout {
+            Timeout::NoTimeout => true,
+            _ => false,
+        }
+    }
 }

@@ -1,109 +1,105 @@
 use crate::protocol::consensus::{self, ScriptFlags};
-use crate::util::EmptyResult;
-use crate::verification::{CheckQueueControl, ScriptVerification};
-use crate::CoinView;
+use crate::{error::TransactionVerificationError, CoinView};
 use bitcoin::{
     blockdata::{constants::*, opcodes, script::Instruction},
-    consensus::encode::{serialize, VarInt},
-    Script, Transaction,
+    consensus::encode::serialize,
+    Script, Transaction, VarInt,
 };
 use consensus::*;
-use failure::{bail, ensure, err_msg, Error, Fail};
-use std::{collections::HashSet, sync::Arc};
-
-#[derive(Debug, Fail)]
-pub enum VerificationError {
-    #[fail(display = "bad-txns-inputs-missingorspent")]
-    InputsMissingOrSpent,
-    #[fail(display = "bad-txns-inputvalues-outofrange")]
-    InputValuesOutOfRange,
-    #[fail(display = "bad-txns-in-belowout")]
-    InBelowOut,
-    #[fail(display = "bad-txns-fee-outofrange")]
-    FeeOutOfRange,
-    #[fail(display = "bad-txns-premature-spend-of-coinbase")]
-    PrematureCoinbaseSpend,
-}
+use rayon::prelude::*;
+use std::collections::HashSet;
 
 pub trait TransactionVerifier {
-    fn check_inputs(&self, view: &CoinView, height: u32) -> Result<u64, Error>;
+    fn check_inputs(
+        &self,
+        view: &CoinView,
+        height: u32,
+    ) -> Result<u64, TransactionVerificationError>;
     fn get_output_value(&self) -> u64;
-    fn is_final(&self, height: u32, time: u32) -> bool;
+    fn is_final(&self, height: u32, time: i32) -> bool;
     fn get_sigop_cost(&self, view: &CoinView, flags: ScriptFlags) -> usize;
     fn get_legacy_sig_op_count(&self) -> usize;
     fn get_p2sh_sig_op_count(&self, view: &CoinView) -> usize;
     fn get_witness_sig_op_count(&self, view: &CoinView) -> usize;
-    fn push_verification(&self, view: &CoinView, flags: ScriptFlags, verifier: &CheckQueueControl);
-    fn check_sanity(&self) -> EmptyResult;
+    fn check_sanity(&self) -> Result<(), TransactionVerificationError>;
     fn has_witness(&self) -> bool;
-    fn get_size(&self) -> usize;
+    fn verify_scripts(
+        &self,
+        view: &CoinView,
+        flags: &ScriptFlags,
+    ) -> Result<(), TransactionVerificationError>;
 }
 
 impl TransactionVerifier for Transaction {
-    fn push_verification(&self, view: &CoinView, flags: ScriptFlags, verifier: &CheckQueueControl) {
-        let raw = Arc::new(serialize(self));
-
-        let mut checks = vec![];
-
-        for (index, input) in self.input.iter().enumerate() {
-            let previous_output = view
-                .get_output(&input.previous_output)
-                .expect("Output not found")
-                .clone();
-            let check = ScriptVerification {
-                raw_tx: Arc::clone(&raw),
-                index,
-                previous_output,
-                flags: flags.bits(),
-            };
-            checks.push(check);
-        }
-
-        verifier.add(checks);
+    fn verify_scripts(
+        &self,
+        view: &CoinView,
+        flags: &ScriptFlags,
+    ) -> Result<(), TransactionVerificationError> {
+        let spending_transaction = serialize(self);
+        self.input
+            .par_iter()
+            .enumerate()
+            .map(|(input_index, input)| {
+                let utxo = &view.map[&input.previous_output];
+                let amount = utxo.output.value;
+                let spent_output = utxo.output.script_pubkey.as_bytes();
+                bitcoinconsensus::verify_with_flags(
+                    spent_output,
+                    amount,
+                    &spending_transaction,
+                    input_index,
+                    flags.bits(),
+                )
+                .map_err(|_| TransactionVerificationError::InvalidScripts)
+            })
+            .collect()
     }
 
     // bcoin spends the inputs before check inputs so coin.spent is true
     // whereas bitcoin core does so afterwards
-    fn check_inputs(&self, view: &CoinView, height: u32) -> Result<u64, Error> {
+    fn check_inputs(
+        &self,
+        view: &CoinView,
+        height: u32,
+    ) -> Result<u64, TransactionVerificationError> {
+        use TransactionVerificationError::*;
+
         let mut total: u64 = 0;
 
         for input in &self.input {
             let coin = match view.get_entry(&input.previous_output) {
+                None => return Err(InputsMissingOrSpent),
                 Some(coin) => coin,
-                None => bail!(VerificationError::InputsMissingOrSpent),
             };
 
             // ensure!(!coin.spent);
 
-            if coin.coinbase {
-                ensure!(
-                    height - coin.height.unwrap() >= consensus::COINBASE_MATURITY,
-                    VerificationError::PrematureCoinbaseSpend
-                );
+            // TODO: height might be none if mempool child transaction, don't unwrap
+            if coin.coinbase && height - coin.height.unwrap() < consensus::COINBASE_MATURITY {
+                return Err(PrematureCoinbaseSpend);
             }
 
             total = total
                 .checked_add(coin.output.value)
-                .ok_or(VerificationError::InputValuesOutOfRange)?;
+                .ok_or_else(|| InputValuesOutOfRange)?;
 
-            ensure!(
-                coin.output.value <= consensus::MAX_MONEY && total <= consensus::MAX_MONEY,
-                VerificationError::InputValuesOutOfRange
-            );
+            if coin.output.value > consensus::MAX_MONEY || total > consensus::MAX_MONEY {
+                return Err(InputValuesOutOfRange);
+            }
         }
 
         let value = self.get_output_value();
 
         if total < value {
-            bail!(VerificationError::InBelowOut);
+            return Err(InBelowOut);
         }
 
         let fee = total - value;
 
-        ensure!(
-            fee <= consensus::MAX_MONEY,
-            VerificationError::FeeOutOfRange
-        );
+        if fee > consensus::MAX_MONEY {
+            return Err(FeeOutOfRange);
+        }
 
         Ok(fee)
     }
@@ -115,18 +111,19 @@ impl TransactionVerifier for Transaction {
             .fold(0, |total, output| total + output.value)
     }
 
-    fn is_final(&self, height: u32, time: u32) -> bool {
+    // TODO: use option rather than i32
+    fn is_final(&self, height: u32, time: i32) -> bool {
         if self.lock_time == 0 {
             return true;
         }
 
         let lock_time = if self.lock_time < consensus::LOCKTIME_THRESHOLD {
-            height
+            height as i32
         } else {
             time
         };
 
-        if self.lock_time < lock_time {
+        if (self.lock_time as i32) < lock_time {
             return true;
         }
 
@@ -159,14 +156,19 @@ impl TransactionVerifier for Transaction {
 
     /// Get the legacy signature operation count which is quite inaccurate
     fn get_legacy_sig_op_count(&self) -> usize {
-        let mut sig_ops = 0;
-        for input in &self.input {
-            sig_ops += input.script_sig.get_sig_op_count(false);
-        }
-        for output in &self.output {
-            sig_ops += output.script_pubkey.get_sig_op_count(false);
-        }
-        sig_ops
+        let inputs_count: usize = self
+            .input
+            .iter()
+            .map(|input| input.script_sig.get_sig_op_count(false))
+            .sum();
+
+        let outputs_count: usize = self
+            .output
+            .iter()
+            .map(|output| output.script_pubkey.get_sig_op_count(false))
+            .sum();
+
+        inputs_count + outputs_count
     }
 
     fn get_p2sh_sig_op_count(&self, view: &CoinView) -> usize {
@@ -203,22 +205,32 @@ impl TransactionVerifier for Transaction {
         sig_ops
     }
 
-    fn check_sanity(&self) -> EmptyResult {
-        ensure!(!self.input.is_empty(), "bad-txns-vin-empty");
-        ensure!(!self.output.is_empty(), "bad-txns-vout-empty");
+    fn check_sanity(&self) -> Result<(), TransactionVerificationError> {
+        use TransactionVerificationError::*;
 
-        ensure!(
-            self.get_size() * WITNESS_SCALE_FACTOR <= MAX_BLOCK_WEIGHT as usize,
-            "bad-txns-oversize"
-        );
+        if self.input.is_empty() {
+            return Err(InputsEmpty);
+        }
+
+        if self.output.is_empty() {
+            return Err(OutputsEmpty);
+        }
+
+        if tx_stripped_size(self) * WITNESS_SCALE_FACTOR > MAX_BLOCK_WEIGHT as usize {
+            return Err(Oversized);
+        }
 
         let mut value_out: u64 = 0;
         for output in &self.output {
-            ensure!(output.value <= MAX_MONEY, "bad-txns-vout-toolarge");
+            if output.value > MAX_MONEY {
+                return Err(OutputTooLarge);
+            }
             value_out = value_out
                 .checked_add(output.value)
-                .ok_or_else(|| err_msg("bad-txns-txouttotal-toolarge"))?;
-            ensure!(value_out <= MAX_MONEY, "bad-txns-txouttotal-toolarge");
+                .ok_or_else(|| OutputTotalTooLarge)?;
+            if value_out > MAX_MONEY {
+                return Err(OutputTotalTooLarge);
+            }
         }
 
         // can only be duplicate inputs if more than 1
@@ -226,22 +238,23 @@ impl TransactionVerifier for Transaction {
             // Check for duplicate inputs
             let mut outpoints = HashSet::with_capacity(self.input.len());
             for input in &self.input {
-                ensure!(
-                    outpoints.insert(&input.previous_output),
-                    "bad-txns-inputs-duplicate"
-                );
+                let duplicate = !outpoints.insert(&input.previous_output);
+                if duplicate {
+                    return Err(DuplicateInput);
+                }
             }
         }
 
         if self.is_coin_base() {
             let script_sig_len = self.input[0].script_sig.len();
-            ensure!(
-                script_sig_len >= 2 && script_sig_len <= 100,
-                "bad-cb-length"
-            );
+            if script_sig_len < 2 || script_sig_len > 100 {
+                return Err(BadCoinbaseLength);
+            }
         } else {
             for input in &self.input {
-                ensure!(!input.previous_output.is_null(), "bad-txns-prevout-null");
+                if input.previous_output.is_null() {
+                    return Err(NullPreviousOutput);
+                }
             }
         }
 
@@ -251,28 +264,6 @@ impl TransactionVerifier for Transaction {
     /// Test whether the transaction has a non-empty witness.
     fn has_witness(&self) -> bool {
         self.input.iter().any(|input| !input.witness.is_empty())
-    }
-
-    fn get_size(&self) -> usize {
-        let input_size =
-            self.input
-                .iter()
-                .fold(VarInt(self.input.len() as u64).len(), |total, input| {
-                    total
-                        + 40
-                        + VarInt(input.script_sig.len() as u64).len()
-                        + input.script_sig.len()
-                });
-        let output_size =
-            self.output
-                .iter()
-                .fold(VarInt(self.output.len() as u64).len(), |total, output| {
-                    total
-                        + 8
-                        + VarInt(output.script_pubkey.len() as u64).len()
-                        + output.script_pubkey.len()
-                });
-        4 + input_size + output_size + 4
     }
 }
 
@@ -397,4 +388,31 @@ fn witness_sig_op_count(version: usize, program: &[u8], witness: &[Vec<u8>]) -> 
     // Future flags may be implemented here.
     // TODO: Any changes for taproot?
     0
+}
+
+/// Transaction size without witness
+pub fn tx_stripped_size(tx: &Transaction) -> usize {
+    let mut input_weight = 0;
+    for input in &tx.input {
+        input_weight += 32 + 4 + 4 + // outpoint (32+4) + nSequence
+                VarInt(input.script_sig.len() as u64).len() +
+                input.script_sig.len();
+    }
+    let mut output_size = 0;
+    for output in &tx.output {
+        output_size += 8 + // value
+                VarInt(output.script_pubkey.len() as u64).len() +
+                output.script_pubkey.len();
+    }
+    let non_input_size =
+        // version:
+        4 +
+        // count varints:
+        VarInt(tx.input.len() as u64).len() +
+        VarInt(tx.output.len() as u64).len() +
+        output_size +
+        // lock_time
+        4;
+
+    non_input_size + input_weight
 }

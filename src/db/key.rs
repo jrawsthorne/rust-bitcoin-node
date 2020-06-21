@@ -6,11 +6,10 @@ use super::{
 };
 use crate::blockstore::RecordType;
 use bitcoin::{
-    consensus::encode::{serialize, Encodable},
+    consensus::encode::{self, serialize, Encodable},
     util::uint::Uint256,
     BlockHash, OutPoint,
 };
-use failure::Error;
 use std::io::Cursor;
 
 pub enum Key {
@@ -31,7 +30,7 @@ pub enum Key {
 }
 
 impl Key {
-    pub fn encode(&self) -> Result<Vec<u8>, Error> {
+    pub fn encode(&self) -> Result<Vec<u8>, encode::Error> {
         Ok(match self {
             Key::Coin(outpoint) => serialize(outpoint),
             Key::ChainEntryHash(height) => serialize(height),

@@ -2,22 +2,25 @@ use super::ChainEntry;
 use crate::blockstore::{BlockStore, BlockStoreOptions};
 use crate::coins::{CoinEntry, CoinView};
 use crate::db::{
-    Batch, Database, DiskDatabase, Iter, IterMode, Key, COL_CHAIN_WORK, COL_VERSION_BIT_STATE,
+    Batch, Database, DiskDatabase, Iter, IterMode, Key, COL_CHAIN_ENTRY, COL_CHAIN_ENTRY_HASH,
+    COL_CHAIN_WORK, COL_VERSION_BIT_STATE,
 };
-use crate::protocol::{NetworkParams, ThresholdState, VERSIONBITS_NUM_BITS};
-use crate::util::EmptyResult;
+use crate::error::DBError;
+use crate::protocol::{NetworkParams, ThresholdState};
 use bitcoin::Amount;
 use bitcoin::{
-    consensus::encode::{deserialize, serialize},
+    consensus::{
+        encode::{deserialize, serialize},
+        Decodable,
+    },
     Block, BlockHash, OutPoint, Transaction, TxOut,
 };
-use failure::Error;
 use log::info;
-use std::collections::{hash_map::Entry, HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 #[derive(Default)]
 pub struct ChainEntryCache {
-    height: HashMap<u32, ChainEntry>,
+    height: HashMap<u32, BlockHash>,
     hash: HashMap<BlockHash, ChainEntry>,
     batch: Vec<ChainEntryCacheOperation>,
 }
@@ -30,6 +33,24 @@ enum ChainEntryCacheOperation {
 }
 
 impl ChainEntryCache {
+    pub fn new(db: &DiskDatabase) -> Self {
+        let mut cache = Self::default();
+        for (_, entry) in db
+            .iter_cf::<ChainEntry>(COL_CHAIN_ENTRY, IterMode::Start)
+            .unwrap()
+        {
+            cache.hash.insert(entry.hash, entry);
+        }
+        for (height, hash) in db
+            .iter_cf::<BlockHash>(COL_CHAIN_ENTRY_HASH, IterMode::Start)
+            .unwrap()
+        {
+            let height = deserialize(&height).unwrap();
+            cache.height.insert(height, hash);
+        }
+        cache
+    }
+
     fn insert_height_batch(&mut self, entry: ChainEntry) {
         self.batch
             .push(ChainEntryCacheOperation::InsertHeight(entry));
@@ -53,8 +74,12 @@ impl ChainEntryCache {
         use ChainEntryCacheOperation::*;
         for operation in self.batch.drain(..) {
             match operation {
-                InsertHash(entry) => self.hash.insert(entry.hash, entry),
-                InsertHeight(entry) => self.height.insert(entry.height, entry),
+                InsertHash(entry) => {
+                    self.hash.insert(entry.hash, entry);
+                }
+                InsertHeight(entry) => {
+                    self.height.insert(entry.height, entry.hash);
+                }
                 // RemoveHeight(height) => self.height.remove(&height),
                 // RemoveHash(hash) => self.hash.remove(&hash),
             };
@@ -66,48 +91,7 @@ impl ChainEntryCache {
     }
 }
 
-enum CoinCacheOperation {
-    Insert(OutPoint, CoinEntry),
-    Remove(OutPoint),
-}
-
-#[derive(Default)]
-pub struct CoinCache {
-    coins: HashMap<OutPoint, CoinEntry>,
-    batch: Vec<CoinCacheOperation>,
-}
-
-impl CoinCache {
-    fn insert_batch(&mut self, outpoint: OutPoint, coin_entry: CoinEntry) {
-        self.batch
-            .push(CoinCacheOperation::Insert(outpoint, coin_entry));
-    }
-
-    fn remove_batch(&mut self, outpoint: OutPoint) {
-        self.batch.push(CoinCacheOperation::Remove(outpoint));
-    }
-
-    fn write_batch(&mut self) {
-        use CoinCacheOperation::*;
-        for operation in self.batch.drain(..) {
-            match operation {
-                Insert(outpoint, entry) => {
-                    self.coins.insert(outpoint, entry);
-                }
-                Remove(outpoint) => {
-                    self.coins.remove(&outpoint);
-                }
-            }
-        }
-    }
-
-    fn clear_batch(&mut self) {
-        self.batch.clear();
-    }
-}
-
 pub struct ChainDB {
-    pub coin_cache: CoinCache,
     entry_cache: ChainEntryCache,
     pub state: ChainState,
     pub db: DiskDatabase,
@@ -128,17 +112,19 @@ pub struct ChainDBOptions {
 
 impl ChainDB {
     pub fn new(network_params: NetworkParams, options: ChainDBOptions) -> Self {
+        let db = DiskDatabase::new(options.path.clone());
+        let entry_cache = ChainEntryCache::new(&db);
+
         Self {
-            blocks: BlockStore::new(BlockStoreOptions::new(
-                network_params.network,
-                "/home/jrawsthorne/Documents/Projects/rust/rust_bitcoin_node/data/blocks"
-                    .to_string(),
-            )),
+            blocks: BlockStore::new(BlockStoreOptions::new(network_params.network, {
+                let mut path = options.path;
+                path.push("blocks");
+                path
+            })),
             version_bits_cache: VersionBitsCache::new(&network_params),
             network_params,
-            db: DiskDatabase::new(options.path),
-            coin_cache: Default::default(),
-            entry_cache: Default::default(),
+            db,
+            entry_cache,
             state: Default::default(),
             current: Default::default(),
             pending: Default::default(),
@@ -147,7 +133,7 @@ impl ChainDB {
         }
     }
 
-    pub async fn open(&mut self) -> EmptyResult {
+    pub fn open(&mut self) -> Result<(), DBError> {
         match self.get_state()? {
             Some(state) => {
                 self.version_bits_cache = self.get_version_bits_cache()?;
@@ -156,7 +142,7 @@ impl ChainDB {
                 info!("ChainDB successfully loaded.");
             }
             None => {
-                self.save_genesis().await?;
+                self.save_genesis()?;
                 info!("ChainDB successfully initialized.");
             }
         }
@@ -171,12 +157,17 @@ impl ChainDB {
             Amount::from_sat(self.state.value)
         );
 
+        let most_work = self.most_work.as_ref().unwrap();
+
+        info!(
+            "Most work header: hash={} height={}",
+            most_work.hash, most_work.height
+        );
+
         Ok(())
     }
 
-    fn get_version_bits_cache(&self) -> Result<VersionBitsCache, Error> {
-        use bitcoin::consensus::Decodable;
-
+    fn get_version_bits_cache(&self) -> Result<VersionBitsCache, DBError> {
         let mut cache = VersionBitsCache::new(&self.network_params);
 
         let items = self
@@ -187,13 +178,13 @@ impl ChainDB {
             let mut decoder = std::io::Cursor::new(key);
             let bit = u8::consensus_decode(&mut decoder)?;
             let hash = BlockHash::consensus_decode(&mut decoder)?;
-            cache.insert(bit, hash, state);
+            cache.insert(&bit, hash, state);
         }
 
         Ok(cache)
     }
 
-    fn save_version_bits_cache(&mut self) -> EmptyResult {
+    fn save_version_bits_cache(&mut self) -> Result<(), DBError> {
         let updates = &self.version_bits_cache.updates;
 
         if updates.is_empty() {
@@ -214,13 +205,13 @@ impl ChainDB {
         Ok(())
     }
 
-    pub async fn write_block(&mut self, block: &Block) -> EmptyResult {
+    pub fn write_block(&mut self, block: &Block) -> Result<(), DBError> {
         let hash = block.block_hash();
-        self.blocks.write(hash, &serialize(block)).await
+        self.blocks.write(hash, &serialize(block))
     }
 
-    pub async fn get_block(&self, hash: BlockHash) -> Result<Option<Block>, Error> {
-        let raw = self.get_raw_block(hash).await?;
+    pub fn get_block(&self, hash: BlockHash) -> Result<Option<Block>, DBError> {
+        let raw = self.get_raw_block(hash)?;
         if let Some(raw) = raw {
             let block = deserialize(&raw)?;
             Ok(Some(block))
@@ -229,32 +220,32 @@ impl ChainDB {
         }
     }
 
-    pub async fn get_raw_block(&self, hash: BlockHash) -> Result<Option<Vec<u8>>, Error> {
-        self.blocks.read(hash, 0, None).await
+    pub fn get_raw_block(&self, hash: BlockHash) -> Result<Option<Vec<u8>>, DBError> {
+        self.blocks.read(hash, 0, None)
     }
 
-    fn set_most_work(&mut self) -> EmptyResult {
+    fn set_most_work(&mut self) -> Result<(), DBError> {
         self.most_work = self.get_most_work_entry()?;
         assert!(self.most_work.is_some());
         Ok(())
     }
 
-    fn get_most_work_entry(&self) -> Result<Option<ChainEntry>, Error> {
+    fn get_most_work_entry(&self) -> Result<Option<ChainEntry>, DBError> {
         Ok(self
             .get_tip_entries()?
             .next()
             .and_then(|(_, entry)| Some(entry)))
     }
 
-    fn get_tip_entries(&self) -> Result<Iter<ChainEntry>, Error> {
+    fn get_tip_entries(&self) -> Result<Iter<ChainEntry>, DBError> {
         self.db.iter_cf(COL_CHAIN_WORK, IterMode::End)
     }
 
-    fn get_state(&self) -> Result<Option<ChainState>, Error> {
+    fn get_state(&self) -> Result<Option<ChainState>, DBError> {
         self.db.get(Key::ChainState)
     }
 
-    async fn save_genesis(&mut self) -> EmptyResult {
+    fn save_genesis(&mut self) -> Result<(), DBError> {
         use bitcoin::blockdata::constants::genesis_block;
         let genesis = genesis_block(self.network_params.network);
         let entry = ChainEntry::from_block(&genesis, None);
@@ -264,17 +255,22 @@ impl ChainDB {
         // Save the header entry.
         self.save_entry(entry, &ChainEntry::default())?;
 
-        self.write_block(&genesis).await?;
+        self.write_block(&genesis)?;
 
         // Connect to the main chain.
-        self.connect(entry, &genesis, CoinView::default())?;
+        self.connect(entry, &genesis, &CoinView::default())?;
 
         Ok(())
     }
 
-    pub fn connect(&mut self, entry: ChainEntry, block: &Block, view: CoinView) -> EmptyResult {
+    pub fn connect(
+        &mut self,
+        entry: ChainEntry,
+        block: &Block,
+        view: &CoinView,
+    ) -> Result<(), DBError> {
         self.start();
-        let connect = || {
+        let mut connect = || {
             let hash = block.block_hash();
 
             // Hash -> Next Block
@@ -315,7 +311,7 @@ impl ChainDB {
         self.current.as_mut().unwrap()
     }
 
-    fn commit(&mut self) -> EmptyResult {
+    fn commit(&mut self) -> Result<(), DBError> {
         assert!(self.current.is_some());
         assert!(self.pending.is_some());
 
@@ -324,7 +320,6 @@ impl ChainDB {
 
         if let Err(error) = self.db.write_batch(current) {
             self.entry_cache.clear_batch();
-            self.coin_cache.clear_batch();
             return Err(error);
         }
 
@@ -333,7 +328,6 @@ impl ChainDB {
         }
 
         self.entry_cache.write_batch();
-        self.coin_cache.write_batch();
         self.version_bits_cache.commit();
 
         Ok(())
@@ -347,115 +341,63 @@ impl ChainDB {
         self.pending.take();
 
         self.entry_cache.clear_batch();
-        self.coin_cache.clear_batch();
         self.version_bits_cache.drop();
     }
 
-    pub fn get_tip(&mut self) -> Result<Option<&ChainEntry>, Error> {
-        let tip = self.state.tip;
-        self.get_entry_by_hash(tip)
+    pub fn get_tip(&self) -> Option<&ChainEntry> {
+        self.get_entry_by_hash(&self.state.tip)
     }
 
-    pub fn get_entry_by_hash(&mut self, hash: BlockHash) -> Result<Option<&ChainEntry>, Error> {
-        Self::entry_by_hash(&mut self.entry_cache.hash, &self.db, hash)
+    pub fn get_entry_by_hash(&self, hash: &BlockHash) -> Option<&ChainEntry> {
+        self.entry_cache.hash.get(hash)
     }
 
-    pub fn entry_by_hash<'a>(
-        cache: &'a mut HashMap<BlockHash, ChainEntry>,
-        db: &'a DiskDatabase,
-        hash: BlockHash,
-    ) -> Result<Option<&'a ChainEntry>, Error> {
-        Ok(match cache.entry(hash) {
-            Entry::Occupied(entry) => Some(entry.into_mut()),
-            Entry::Vacant(entry) => db
-                .get(Key::ChainEntry(hash))?
-                .and_then(|chain_entry| Some(&*entry.insert(chain_entry))),
-        })
+    pub fn get_entry_by_height(&self, height: &u32) -> Option<&ChainEntry> {
+        let hash = self.entry_cache.height.get(height)?;
+        Some(&self.entry_cache.hash[hash])
     }
 
-    pub fn entry_by_height<'a>(
-        height_cache: &'a mut HashMap<u32, ChainEntry>,
-        hash_cache: &'a mut HashMap<BlockHash, ChainEntry>,
-        db: &'a DiskDatabase,
-        height: u32,
-    ) -> Result<Option<&'a ChainEntry>, Error> {
-        Ok(match height_cache.entry(height) {
-            Entry::Occupied(entry) => Some(entry.into_mut()),
-            Entry::Vacant(entry) => {
-                if let Some(hash) = db.get(Key::ChainEntryHash(height))? {
-                    if let Some(chain_entry) = Self::entry_by_hash(hash_cache, db, hash)? {
-                        entry.insert(*chain_entry);
-                        return Ok(Some(chain_entry));
-                    }
-                }
-                None
-            }
-        })
-    }
-
-    pub fn get_entry_by_height(&mut self, height: u32) -> Result<Option<&ChainEntry>, Error> {
-        Self::entry_by_height(
-            &mut self.entry_cache.height,
-            &mut self.entry_cache.hash,
-            &self.db,
-            height,
-        )
-    }
-
-    pub fn get_next_path(
-        &mut self,
-        mut entry: ChainEntry,
+    pub fn get_next_path<'a>(
+        &'a self,
+        mut entry: &'a ChainEntry,
         height: u32,
         limit: usize,
-    ) -> Result<VecDeque<ChainEntry>, Error> {
+    ) -> VecDeque<&ChainEntry> {
         let mut entries = VecDeque::new();
 
         if limit == 0 {
-            return Ok(entries);
+            return entries;
         }
 
         let start = height + limit as u32;
 
         if start < entry.height {
-            entry = self.get_ancestor(&entry, start)?;
+            entry = self.get_ancestor(&entry, start);
         }
 
         while entry.height > height {
             entries.push_front(entry);
-            entry = *self.get_entry_by_hash(entry.prev_block)?.unwrap();
+            entry = self.get_entry_by_hash(&entry.prev_block).unwrap();
         }
 
-        Ok(entries)
+        entries
     }
 
-    pub async fn has_block(&self, hash: BlockHash) -> Result<bool, Error> {
-        self.blocks.has(hash).await
+    pub fn has_block(&self, hash: BlockHash) -> Result<bool, DBError> {
+        self.blocks.has(hash)
     }
 
-    pub fn read_coin(&mut self, prevout: OutPoint) -> Result<Option<&CoinEntry>, Error> {
-        Ok(match self.coin_cache.coins.entry(prevout) {
-            Entry::Occupied(entry) => Some(&*entry.into_mut()),
-            Entry::Vacant(entry) => match self.db.get(Key::Coin(prevout))? {
-                Some(coin) => Some(&*entry.insert(coin)),
-                None => None,
-            },
-        })
+    pub fn read_coin(&self, prevout: OutPoint) -> Result<Option<CoinEntry>, DBError> {
+        self.db.get(Key::Coin(prevout))
     }
 
-    pub fn has_coins(&mut self, tx: &Transaction) -> bool {
+    pub fn has_coins(&self, tx: &Transaction) -> bool {
         let txid = tx.txid();
 
-        for vout in 0..tx.output.len() {
-            let key = Key::Coin(OutPoint {
-                txid,
-                vout: vout as u32,
-            });
-            if self.db.has(key).unwrap() {
-                return true;
-            }
-        }
-
-        false
+        (0..tx.output.len() as u32).any(|vout| {
+            let key = Key::Coin(OutPoint { txid, vout });
+            self.db.has(key).unwrap()
+        })
     }
 
     fn start(&mut self) {
@@ -466,10 +408,14 @@ impl ChainDB {
         self.pending.replace(self.state);
 
         self.entry_cache.clear_batch();
-        self.coin_cache.clear_batch();
     }
 
-    fn connect_block(&mut self, entry: ChainEntry, block: &Block, view: CoinView) -> EmptyResult {
+    fn connect_block(
+        &mut self,
+        entry: ChainEntry,
+        block: &Block,
+        view: &CoinView,
+    ) -> Result<(), DBError> {
         let pending = self.pending.as_mut().unwrap();
         pending.connect(block);
 
@@ -480,18 +426,17 @@ impl ChainDB {
         for (i, tx) in block.txdata.iter().enumerate() {
             if i > 0 {
                 for input in &tx.input {
-                    pending.spend(
-                        view.get_output(&input.previous_output)
-                            .expect("already checked before connect"),
-                    );
+                    let spent = view
+                        .get_output(&input.previous_output)
+                        .expect("already checked before connect");
+                    pending.spend(spent);
                 }
             }
 
-            for output in tx
-                .output
-                .iter()
-                .filter(|output| !output.script_pubkey.is_provably_unspendable())
-            {
+            for output in &tx.output {
+                if output.script_pubkey.is_provably_unspendable() {
+                    continue;
+                }
                 pending.add(output);
             }
         }
@@ -501,137 +446,93 @@ impl ChainDB {
         Ok(())
     }
 
-    fn save_view(&mut self, view: CoinView) -> EmptyResult {
-        for (outpoint, coin) in view.map {
+    fn save_view(&mut self, view: &CoinView) -> Result<(), DBError> {
+        for (outpoint, coin) in &view.map {
             if coin.spent {
-                self.coin_cache.remove_batch(outpoint);
-                self.batch().remove(Key::Coin(outpoint))?;
+                self.batch().remove(Key::Coin(*outpoint));
                 continue;
             }
-            self.batch().insert(Key::Coin(outpoint), &coin)?;
-            self.coin_cache.insert_batch(outpoint, coin);
+            self.batch().insert(Key::Coin(*outpoint), coin)?;
         }
         Ok(())
     }
 
-    fn get_skip_height(height: u32) -> u32 {
-        if height < 2 {
-            return 0;
-        }
-
-        let flip_low = |n| n & (n - 1);
-
-        if height & 1 == 1 {
-            flip_low(flip_low(height - 1) + 1)
-        } else {
-            flip_low(height)
-        }
+    fn get_skip<'a>(&'a self, entry: &'a ChainEntry) -> &ChainEntry {
+        self.get_ancestor(entry, get_skip_height(entry.height))
     }
 
-    fn get_skip(&mut self, entry: &ChainEntry) -> Result<ChainEntry, Error> {
-        self.get_ancestor(entry, Self::get_skip_height(entry.height))
-    }
-
-    pub fn get_ancestor(&mut self, entry: &ChainEntry, height: u32) -> Result<ChainEntry, Error> {
+    pub fn get_ancestor<'a>(&'a self, entry: &'a ChainEntry, height: u32) -> &ChainEntry {
         assert!(height <= entry.height);
 
-        if self.is_main_chain(entry)? {
-            return Ok(*self
-                .get_entry_by_height(height)?
-                .expect("in main chain so must exist"));
+        if self.is_main_chain(entry) {
+            return self
+                .get_entry_by_height(&height)
+                .expect("in main chain so must exist");
         }
 
-        let mut entry = *entry;
+        let mut entry = entry;
 
         while entry.height != height {
-            let skip = Self::get_skip_height(entry.height) as i32;
-            let prev = Self::get_skip_height(entry.height + 1) as i32;
+            let skip = get_skip_height(entry.height) as i32;
+            let prev = get_skip_height(entry.height + 1) as i32;
 
             let skip_better = skip > height as i32;
             let prev_better = prev < skip - 2 && prev >= height as i32;
 
-            let skip_hash = self.db.get(Key::ChainSkip(entry.hash))?;
-
-            let hash = match skip_hash {
-                Some(skip_hash) if (skip == height as i32 || (skip_better && !prev_better)) => {
-                    skip_hash
+            let hash = match entry.skip {
+                skip_hash if skip_hash != Default::default() => {
+                    if skip == height as i32 || (skip_better && !prev_better) {
+                        skip_hash
+                    } else {
+                        entry.prev_block
+                    }
                 }
                 _ => entry.prev_block,
             };
 
-            entry = *self
-                .get_entry_by_hash(hash)?
+            entry = self
+                .get_entry_by_hash(&hash)
                 .expect("ancestor should always exist");
         }
 
-        Ok(entry)
+        entry
     }
 
-    pub fn is_main_hash(&mut self, hash: BlockHash) -> Result<bool, Error> {
-        if hash == BlockHash::default() {
-            return Ok(false);
+    pub fn is_main_hash(&self, hash: &BlockHash) -> bool {
+        match self.get_entry_by_hash(hash) {
+            None => false,
+            Some(entry) => self.is_main_chain(entry),
         }
-
-        if hash == self.state.tip {
-            return Ok(true);
-        }
-
-        if let Some(cache) = self.get_entry_by_hash(hash)? {
-            let cache_heigt = cache.height;
-            let height = self.get_entry_by_height(cache_heigt)?;
-            if let Some(height) = height {
-                return Ok(height.hash == hash);
-            }
-        }
-
-        if self.get_next_hash(hash)?.is_some() {
-            return Ok(true);
-        }
-
-        Ok(false)
     }
 
-    pub fn is_main_chain(&self, entry: &ChainEntry) -> Result<bool, Error> {
-        if entry.is_genesis() {
-            return Ok(true);
+    pub fn is_main_chain(&self, entry: &ChainEntry) -> bool {
+        match self.entry_cache.height.get(&entry.height) {
+            Some(main_entry_hash) => *main_entry_hash == entry.hash,
+            None => false,
         }
-
-        if entry.hash == self.state.tip {
-            return Ok(true);
-        }
-
-        if let Some(cache) = self.entry_cache.height.get(&entry.height) {
-            return Ok(cache.hash == entry.hash);
-        }
-
-        if self.get_next_hash(entry.hash)?.is_some() {
-            return Ok(true);
-        }
-
-        Ok(false)
     }
 
-    pub fn get_next_hashes(&self, hash: BlockHash) -> Result<Vec<BlockHash>, Error> {
+    pub fn get_next_hashes(&self, hash: BlockHash) -> Result<Vec<BlockHash>, DBError> {
         let hashes = self.db.get(Key::ChainNextHashes(hash))?.unwrap_or_default();
         Ok(hashes)
     }
 
-    pub fn get_next_entries(&mut self, hash: BlockHash) -> Result<Vec<ChainEntry>, Error> {
+    pub fn get_next_entries(&self, hash: BlockHash) -> Result<Vec<ChainEntry>, DBError> {
         let hashes = self.get_next_hashes(hash)?;
         let mut entries = Vec::with_capacity(hashes.len());
         for hash in hashes {
-            entries.push(*self.get_entry_by_hash(hash)?.expect("database corruption"));
+            entries.push(*self.get_entry_by_hash(&hash).expect("database corruption"));
         }
         Ok(entries)
     }
 
-    pub fn get_next_hash(&self, hash: BlockHash) -> Result<Option<BlockHash>, Error> {
+    pub fn get_next_hash(&self, hash: BlockHash) -> Result<Option<BlockHash>, DBError> {
         self.db.get(Key::ChainNextHash(hash))
     }
 
-    pub fn get_next(&mut self, entry: &ChainEntry) -> Result<Option<&ChainEntry>, Error> {
+    pub fn get_next(&self, entry: &ChainEntry) -> Result<Option<&ChainEntry>, DBError> {
         if let Some(hash) = self.get_next_hash(entry.hash)? {
-            self.get_entry_by_hash(hash)
+            Ok(self.get_entry_by_hash(&hash))
         } else {
             Ok(None)
         }
@@ -646,15 +547,11 @@ impl ChainDB {
         self.invalid.insert(hash);
     }
 
-    pub fn has_header(&self, hash: BlockHash) -> Result<bool, Error> {
-        if self.entry_cache.hash.contains_key(&hash) {
-            Ok(true)
-        } else {
-            self.db.has(Key::ChainEntry(hash))
-        }
+    pub fn has_header(&self, hash: &BlockHash) -> bool {
+        self.entry_cache.hash.contains_key(hash)
     }
 
-    pub fn save_entry(&mut self, entry: ChainEntry, prev: &ChainEntry) -> EmptyResult {
+    pub fn save_entry(&mut self, mut entry: ChainEntry, prev: &ChainEntry) -> Result<(), DBError> {
         self.start();
         let mut save_entry = || {
             let hash = entry.hash;
@@ -669,13 +566,13 @@ impl ChainDB {
 
             // Tip chainwork index.
             self.batch()
-                .remove(Key::ChainWork(prev.chainwork, prev.hash))?;
+                .remove(Key::ChainWork(prev.chainwork, prev.hash));
             self.batch()
                 .insert(Key::ChainWork(entry.chainwork, hash), &entry)?;
 
             if !entry.is_genesis() {
-                let skip = self.get_skip(&entry)?;
-                self.batch().insert(Key::ChainSkip(hash), &skip.hash)?;
+                let skip = self.get_skip(&entry);
+                entry.skip = skip.hash;
             }
 
             let mut nexts = self.get_next_hashes(prev.hash)?;
@@ -709,6 +606,20 @@ impl ChainDB {
             }
             _ => (), // current most work entry is better than given entry
         }
+    }
+}
+
+pub fn get_skip_height(height: u32) -> u32 {
+    if height < 2 {
+        return 0;
+    }
+
+    let flip_low = |n| n & (n - 1);
+
+    if height & 1 == 1 {
+        flip_low(flip_low(height - 1) + 1)
+    } else {
+        flip_low(height)
     }
 }
 
@@ -748,48 +659,38 @@ impl ChainState {
     }
 }
 
+#[derive(Default)]
 pub struct VersionBitsCache {
-    bits: Vec<Option<HashMap<BlockHash, ThresholdState>>>,
+    bits: HashMap<u8, HashMap<BlockHash, ThresholdState>>,
     updates: Vec<VersionBitsCacheUpdate>,
 }
 
 impl VersionBitsCache {
     pub fn new(network: &NetworkParams) -> VersionBitsCache {
-        let mut cache = VersionBitsCache {
-            bits: vec![None; VERSIONBITS_NUM_BITS],
-            updates: vec![],
-        };
+        let mut cache = VersionBitsCache::default();
         for (_, deployment) in network.deployments.iter() {
-            assert!(cache.bits[deployment.bit as usize].is_none());
-            cache.bits[deployment.bit as usize] = Some(HashMap::new());
+            assert!(!cache.bits.contains_key(&deployment.bit));
+            cache.bits.insert(deployment.bit, HashMap::new());
         }
         cache
     }
 
     pub fn set(&mut self, bit: u8, hash: BlockHash, state: ThresholdState) {
-        let cache = match self.bits.get_mut(bit as usize) {
-            Some(Some(cache)) => cache,
-            _ => panic!("unknown deployment bit"),
-        };
-
-        if match cache.get(&hash) {
-            None => true,
-            Some(cache_state) if cache_state != &state => true,
-            _ => false,
-        } {
-            cache.insert(hash, state);
-            self.updates
-                .push(VersionBitsCacheUpdate::new(bit, hash, state));
+        let cache = self.cache_mut(&bit);
+        if let Some(cached_state) = cache.get(&hash) {
+            if cached_state != &state {
+                cache.insert(hash, state);
+                self.updates
+                    .push(VersionBitsCacheUpdate::new(bit, hash, state));
+            }
         }
     }
 
-    pub fn get(&self, bit: u8, hash: &BlockHash) -> Option<ThresholdState> {
-        let cache = match self.bits.get(bit as usize) {
-            Some(Some(cache)) => cache,
-            _ => panic!("unknown deployment bit"),
-        };
-
-        cache.get(hash).copied()
+    pub fn get(&self, bit: u8, hash: &BlockHash) -> Option<&ThresholdState> {
+        self.bits
+            .get(&bit)
+            .expect("unknown deployment bit")
+            .get(hash)
     }
 
     pub fn commit(&mut self) {
@@ -798,20 +699,19 @@ impl VersionBitsCache {
 
     pub fn drop(&mut self) {
         for update in self.updates.drain(..) {
-            let cache = match self.bits.get_mut(update.bit as usize) {
-                Some(Some(cache)) => cache,
-                _ => panic!("unknown deployment bit"),
-            };
-            cache.remove(&update.hash);
+            self.bits
+                .get_mut(&update.bit)
+                .expect("unknown deployment bit")
+                .remove(&update.hash);
         }
     }
 
-    pub fn insert(&mut self, bit: u8, hash: BlockHash, state: ThresholdState) {
-        let cache = match self.bits.get_mut(bit as usize) {
-            Some(Some(cache)) => cache,
-            _ => panic!("unknown deployment bit"),
-        };
-        cache.insert(hash, state);
+    fn cache_mut(&mut self, bit: &u8) -> &mut HashMap<BlockHash, ThresholdState> {
+        self.bits.get_mut(bit).expect("unknown deployment bit")
+    }
+
+    pub fn insert(&mut self, bit: &u8, hash: BlockHash, state: ThresholdState) {
+        self.cache_mut(bit).insert(hash, state);
     }
 }
 

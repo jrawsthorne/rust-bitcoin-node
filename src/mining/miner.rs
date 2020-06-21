@@ -1,7 +1,7 @@
 use super::BlockTemplate;
-use crate::blockchain::ChainEntry;
+use crate::blockchain::{Chain, ChainEntry};
 
-use bitcoin::{consensus::params::Params, Address, Block, BlockHeader, Network, PublicKey};
+use bitcoin::{Address, Block, BlockHeader, Network, PublicKey};
 use log::debug;
 use std::time::UNIX_EPOCH;
 
@@ -22,14 +22,22 @@ impl Miner {
         }
     }
 
-    pub fn create_block(&self, tip: ChainEntry, address: Option<Address>) -> BlockTemplate {
+    pub fn create_block(
+        &self,
+        tip: ChainEntry,
+        address: Option<Address>,
+        chain: &Chain,
+    ) -> BlockTemplate {
         let version = 0;
         let address = match address {
             Some(address) => address,
             None => self.get_address(),
         };
-        let time = UNIX_EPOCH.elapsed().unwrap().as_secs() as u32;
-        let target = Params::new(self.network).pow_limit;
+        let time = std::cmp::max(
+            UNIX_EPOCH.elapsed().unwrap().as_secs() as u32,
+            chain.get_median_time(&tip) + 1,
+        );
+        let target = chain.get_target(time, Some(&tip));
 
         let attempt = BlockTemplate::new(tip.height + 1, address, tip.hash, version, time, target);
         debug!(
@@ -42,13 +50,12 @@ impl Miner {
     // single threaded miner for creating test blocks
     pub fn mine_block(template: BlockTemplate) -> Block {
         let coinbase = template.create_coinbase();
-        let bits = BlockHeader::compact_target_from_u256(&template.target);
         let mut block_header = BlockHeader {
             version: template.version,
             prev_blockhash: template.prev_blockhash,
             merkle_root: coinbase.txid().as_hash().into(),
             time: template.time,
-            bits,
+            bits: template.target,
             nonce: 0,
         };
 
