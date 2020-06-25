@@ -1,15 +1,18 @@
+use super::CompactBlock;
 use crate::{blockchain::Chain, mempool::MemPool};
 use bitcoin::{
     network::{
         constants::ServiceFlags,
         message::{NetworkMessage, RawNetworkMessage},
         message_blockdata::{GetHeadersMessage, Inventory},
+        message_compact_blocks::{BlockTxn, GetBlockTxn, SendCmpct},
         message_network::VersionMessage,
         stream_reader::StreamReader,
     },
+    util::bip152::{BlockTransactions, BlockTransactionsRequest, HeaderAndShortIds},
     Block, BlockHash, BlockHeader, Network, Transaction,
 };
-use log::{debug, trace, warn};
+use log::{debug, error, trace, warn};
 use maplit::hashmap;
 use parking_lot::{Mutex, RwLock};
 use std::{
@@ -29,6 +32,7 @@ pub struct P2P {
     requested_blocks: HashSet<BlockHash>,
     requested_blocks_by_peer: HashMap<usize, HashSet<BlockHash>>,
     mempool: SharedMempool,
+    compact_blocks: HashMap<BlockHash, CompactBlock>,
 }
 
 impl P2P {
@@ -47,6 +51,7 @@ impl P2P {
             requested_blocks: HashSet::default(),
             requested_blocks_by_peer: hashmap! {0 => HashSet::default()},
             mempool,
+            compact_blocks: HashMap::default(),
         }));
 
         let jh = p2p.lock().peers.get_mut(&0).unwrap().run(p2p.clone());
@@ -120,14 +125,16 @@ impl P2P {
                         && requested_blocks.insert(header.hash)
                     {
                         peer_requested_blocks.insert(header.hash);
-                        blocks_to_download.push(Inventory::WitnessBlock(header.hash));
+                        blocks_to_download.push(Inventory::CompactBlock(header.hash));
                     }
                 }
                 height += 16;
             }
         }
 
-        self.send(peer, NetworkMessage::GetData(blocks_to_download));
+        if !blocks_to_download.is_empty() {
+            self.send(peer, NetworkMessage::GetData(blocks_to_download));
+        }
     }
 
     fn handle_tx(&mut self, tx: Transaction) {
@@ -138,16 +145,106 @@ impl P2P {
         }
     }
 
+    fn handle_compact_block(&mut self, header_and_short_ids: HeaderAndShortIds, peer: usize) {
+        let hash = header_and_short_ids.header.block_hash();
+
+        assert!(!self.compact_blocks.contains_key(&hash));
+
+        // compact blocks can be sent without being requested
+        if !self.requested_blocks.contains(&hash) {
+            self.requested_blocks.insert(hash);
+            assert!(self
+                .requested_blocks_by_peer
+                .get_mut(&peer)
+                .unwrap()
+                .insert(hash));
+        }
+
+        header_and_short_ids
+            .header
+            .validate_pow(&header_and_short_ids.header.target())
+            .unwrap();
+
+        let mut compact_block = match CompactBlock::new(header_and_short_ids) {
+            None => {
+                self.send(
+                    peer,
+                    NetworkMessage::GetData(vec![Inventory::WitnessBlock(hash)]),
+                );
+                return;
+            }
+            Some(block) => block,
+        };
+
+        let full =
+            compact_block.fill_mempool(self.mempool.read().transactions.values().map(|e| &e.tx));
+
+        if full {
+            debug!("Received full compact block {}", hash);
+            self.handle_block(compact_block.into_block(), peer);
+            return;
+        }
+
+        debug!(
+            "Received non-full compact block {} tx={}/{}",
+            hash, compact_block.count, compact_block.total_tx
+        );
+
+        let txs_request = compact_block.into_block_transactions_request();
+
+        self.compact_blocks.insert(hash, compact_block);
+
+        self.send(
+            peer,
+            NetworkMessage::GetBlockTxn(GetBlockTxn { txs_request }),
+        );
+    }
+
+    fn handle_block_txn(&mut self, block_transactions: BlockTransactions, peer: usize) {
+        let BlockTransactions {
+            block_hash: hash,
+            transactions,
+        } = block_transactions;
+
+        let mut block = self.compact_blocks.remove(&hash).unwrap();
+
+        assert!(block.fill_missing(transactions));
+
+        debug!("Filled compact block {}", hash);
+
+        self.handle_block(block.into_block(), peer);
+    }
+
+    fn handle_get_block_txn(&mut self, request: BlockTransactionsRequest, peer: usize) {
+        let hash = request.block_hash;
+        let block = self.chain.read().db.get_block(hash).unwrap().unwrap();
+        let transactions = BlockTransactions::from_request(&request, &block).unwrap();
+        self.send(peer, NetworkMessage::BlockTxn(BlockTxn { transactions }));
+    }
+
     pub fn handle_message(&mut self, message: RawNetworkMessage, id: usize) {
         match message.payload {
             NetworkMessage::Headers(headers) => self.handle_headers(headers, id),
-            NetworkMessage::Version(version) => {
-                dbg!(version);
+            NetworkMessage::Version(_version) => {
                 self.send(id, NetworkMessage::Verack);
             }
             NetworkMessage::Ping(nonce) => self.send(id, NetworkMessage::Pong(nonce)),
             NetworkMessage::Verack => {
                 self.send(id, NetworkMessage::SendHeaders);
+                self.send(
+                    id,
+                    NetworkMessage::SendCmpct(SendCmpct {
+                        send_compact: true,
+                        version: 2,
+                    }),
+                );
+                self.send(
+                    id,
+                    NetworkMessage::SendCmpct(SendCmpct {
+                        send_compact: true,
+                        version: 1,
+                    }),
+                );
 
                 let locator = {
                     let chain = self.chain.read();
@@ -184,13 +281,20 @@ impl P2P {
                     id,
                     NetworkMessage::GetData(
                         invs.into_iter()
-                            .filter(|inv| match inv {
-                                Inventory::Transaction(_) => true,
-                                _ => false,
+                            .filter_map(|inv| match inv {
+                                Inventory::Transaction(txid) => {
+                                    Some(Inventory::WitnessTransaction(txid))
+                                }
+                                _ => None,
                             })
                             .collect(),
                     ),
                 );
+            }
+            NetworkMessage::CmpctBlock(block) => self.handle_compact_block(block.compact_block, id),
+            NetworkMessage::BlockTxn(btxn) => self.handle_block_txn(btxn.transactions, id),
+            NetworkMessage::GetBlockTxn(request) => {
+                self.handle_get_block_txn(request.txs_request, id)
             }
             _ => {}
         }
@@ -215,9 +319,18 @@ impl Peer {
 
         std::thread::spawn(move || {
             let mut reader = StreamReader::new(reader, None);
-            while let Ok(message) = reader.read_next::<RawNetworkMessage>() {
-                trace!("received {} from {}", message.cmd(), addr);
-                p2p.lock().handle_message(message, id);
+            loop {
+                let message = reader.read_next::<RawNetworkMessage>();
+                match message {
+                    Ok(message) => {
+                        trace!("received {} from {}", message.cmd(), addr);
+                        p2p.lock().handle_message(message, id);
+                    }
+                    Err(err) => {
+                        error!("{}", err);
+                        break;
+                    }
+                }
             }
 
             debug!("{} closed", addr);
@@ -226,6 +339,7 @@ impl Peer {
 
     pub fn new(addr: SocketAddr, id: usize, network: Network) -> Self {
         let writer = TcpStream::connect(addr).unwrap();
+        writer.set_nodelay(true).unwrap();
         Self {
             writer,
             addr,

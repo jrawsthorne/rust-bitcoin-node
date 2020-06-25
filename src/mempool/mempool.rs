@@ -14,7 +14,7 @@ use thiserror::Error;
 
 pub struct MemPoolEntry {
     /// the transaction
-    tx: Transaction,
+    pub tx: Transaction,
     /// height of chain when transaction was added to pool
     height: u32,
     coinbase: bool,
@@ -56,9 +56,9 @@ pub enum MempoolError {
 #[derive(Default)]
 pub struct MemPool {
     /// transactions stored in the mempool
-    transactions: HashMap<Txid, MemPoolEntry>,
+    pub transactions: HashMap<Txid, MemPoolEntry>,
     /// map of outpoint to the txid of the transaction that spent that output
-    spents: HashMap<OutPoint, Txid>,
+    pub spents: HashMap<OutPoint, Txid>,
 }
 
 impl MemPool {

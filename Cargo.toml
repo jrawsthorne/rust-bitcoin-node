@@ -7,7 +7,7 @@ edition = "2018"
 [dependencies]
 # tokio = { git = "https://github.com/tokio-rs/tokio", features=["full"] }
 # tokio-util = { version = "0.3.1", features=["codec"] }
-bitcoin = { git="https://github.com/rust-bitcoin/rust-bitcoin", features=["bitcoinconsensus","rand"] }
+bitcoin = { git="https://github.com/jrawsthorne/rust-bitcoin", features=["bitcoinconsensus", "rand"] }
 log = "0.4"
 env_logger = "0.7"
 # bytes = "0.5"
