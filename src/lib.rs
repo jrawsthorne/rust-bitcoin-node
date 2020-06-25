@@ -27,3 +27,5 @@ pub use blockchain::{ChainEntry, ChainListener};
 pub use blockchain::ChainEntry;
 pub use coins::{CoinEntry, CoinView};
 // pub use net::{Peer, PeerId, P2P};
+
+pub mod bloom_filter;
