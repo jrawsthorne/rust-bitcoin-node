@@ -75,8 +75,6 @@ impl DiskDatabase {
         let mut db_options = Options::default();
         db_options.create_if_missing(true);
         db_options.create_missing_column_families(true);
-        db_options.increase_parallelism(4);
-        db_options.set_compression_type(rocksdb::DBCompressionType::Snappy);
 
         let db = Self {
             db: DB::open_cf(&db_options, path, &COLUMNS).unwrap(),

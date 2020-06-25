@@ -8,6 +8,7 @@ edition = "2018"
 # tokio = { git = "https://github.com/tokio-rs/tokio", features=["full"] }
 # tokio-util = { version = "0.3.1", features=["codec"] }
 bitcoin = { git="https://github.com/jrawsthorne/rust-bitcoin", features=["bitcoinconsensus", "rand"] }
+# bitcoin = { path="../rust-bitcoin", features=["bitcoinconsensus", "rand"] }
 log = "0.4"
 env_logger = "0.7"
 # bytes = "0.5"
@@ -18,7 +19,7 @@ rocksdb = "0.13"
 # async-trait = "0.1"
 bitcoinconsensus = "0.19.0-1 "
 regex = "1"
-chrono = "0.4"
+# chrono = "0.4"
 bitflags = "1"
 # num_cpus = "1.13"
 maplit = "1.0.2"

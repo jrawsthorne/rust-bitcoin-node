@@ -8,6 +8,7 @@ use crate::{
     error::{
         BlockHeaderVerificationError, BlockVerificationError, DBError, TransactionVerificationError,
     },
+    util::ms_since,
     verification::{BlockVerifier, TransactionVerifier},
 };
 use bitcoin::{
@@ -17,7 +18,6 @@ use bitcoin::{
     util::uint::Uint256,
     Block, BlockHash, BlockHeader, Network, Transaction,
 };
-use chrono::{Local, TimeZone};
 use log::{debug, error, info, warn};
 use std::collections::VecDeque;
 use std::{path::PathBuf, sync::Arc, time::SystemTime};
@@ -247,11 +247,8 @@ impl Chain {
     fn log_headers(&self, entry: &ChainEntry) {
         if entry.height % 2000 == 0 || self.is_recent() {
             info!(
-                "Headers Status: hash = {} time = {} height = {} target = {}",
-                entry.hash,
-                Local.timestamp(entry.time as i64, 0).format("%d-%m-%Y %r"),
-                entry.height,
-                entry.bits
+                "Headers Status: hash={} height={}",
+                entry.hash, entry.height,
             );
         }
     }
@@ -502,7 +499,7 @@ impl Chain {
 
     pub fn is_recent(&self) -> bool {
         let best = self.most_work();
-        let time = crate::util::now() - self.options.network.max_tip_age as u64;
+        let time = crate::util::now().saturating_sub(self.options.network.max_tip_age as u64);
 
         best.time > time as u32
     }
@@ -616,10 +613,10 @@ impl Chain {
 
         for tx in &block.txdata {
             if !tx.is_coin_base() {
-                view.spend_inputs(&self.db, tx).unwrap();
+                view.spend_inputs(&self.db, tx)?;
             }
             if !tx.is_coin_base() {
-                let fee = tx.check_inputs(&view, height).unwrap();
+                let fee = tx.check_inputs(&view, height)?;
                 reward = reward
                     .checked_add(fee)
                     .ok_or_else(|| TransactionVerificationError::InputValuesOutOfRange)?;
@@ -813,7 +810,8 @@ impl Chain {
         view.add_tx(coinbase, height);
 
         for tx in block.txdata.iter().skip(1) {
-            view.spend_inputs(&self.db, tx)?;
+            view.spend_inputs(&self.db, tx)
+                .expect("error in checkpoints");
             view.add_tx(tx, height);
         }
 
@@ -1112,10 +1110,6 @@ impl ChainOptions {
             path: PathBuf::from_str(path).unwrap(),
         }
     }
-}
-
-fn ms_since(start: &SystemTime) -> f32 {
-    start.elapsed().unwrap().as_secs_f32() * 1000.0
 }
 
 #[derive(Default, Copy, Clone)]

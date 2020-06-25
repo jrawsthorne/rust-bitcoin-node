@@ -1,6 +1,6 @@
 use super::CoinEntry;
 use crate::blockchain::ChainDB;
-use crate::error::DBError;
+use crate::error::{DBError, TransactionVerificationError};
 use bitcoin::{OutPoint, Transaction, TxOut};
 use std::collections::{hash_map::Entry, HashMap};
 
@@ -54,16 +54,18 @@ impl CoinView {
 
     /// Get every unspent output for the inputs of a transaction
     /// and ensure that the output exists and was not spent in a previous input
-    pub fn spend_inputs(&mut self, db: &ChainDB, tx: &Transaction) -> Result<(), DBError> {
+    pub fn spend_inputs(
+        &mut self,
+        db: &ChainDB,
+        tx: &Transaction,
+    ) -> Result<(), TransactionVerificationError> {
         for input in &tx.input {
-            let coin = self.read_coin(db, input.previous_output)?;
+            let coin = self.read_coin(db, input.previous_output).unwrap();
             match coin {
-                Some(coin) => {
-                    // should have already been checked
-                    assert!(!coin.spent);
+                Some(coin) if !coin.spent => {
                     coin.spent = true;
                 }
-                None => unreachable!(), // should have already been checked,
+                _ => return Err(TransactionVerificationError::InputsMissingOrSpent), // should have already been checked,
             }
         }
         Ok(())

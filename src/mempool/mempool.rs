@@ -3,13 +3,14 @@ use crate::coins::CoinView;
 use crate::{
     error::TransactionVerificationError,
     protocol::consensus::{LockFlags, ScriptFlags},
+    util::ms_since,
     verification::TransactionVerifier,
     ChainEntry, CoinEntry,
 };
 use bitcoin::Transaction;
 use bitcoin::{OutPoint, Txid};
 use log::{debug, error, info};
-use std::collections::HashMap;
+use std::{collections::HashMap, time::SystemTime};
 use thiserror::Error;
 
 pub struct MemPoolEntry {
@@ -79,6 +80,8 @@ impl MemPool {
 
     /// add a transaction
     pub fn add_tx(&mut self, chain: &Chain, tx: Transaction) -> Result<(), MempoolError> {
+        let start = SystemTime::now();
+
         let lock_flags = LockFlags::STANDARD_LOCKTIME_FLAGS;
         let height = chain.height;
         let hash = tx.txid();
@@ -136,10 +139,11 @@ impl MemPool {
         self.transactions.insert(hash, entry);
 
         debug!(
-            "Added {} to mempool (txs={}, spents={}).",
+            "Added {} to mempool (txs={}, spents={}, time={}ms).",
             hash,
             self.transactions.len(),
-            self.spents.len()
+            self.spents.len(),
+            ms_since(&start)
         );
 
         Ok(())
@@ -302,15 +306,9 @@ impl MemPool {
         }
     }
 
-    fn get_spent(&self, out_point: &OutPoint) -> Option<&MemPoolEntry> {
-        self.spents
-            .get(out_point)
-            .map(|txid| &self.transactions[txid])
-    }
-
     fn remove_spent(&mut self, out_point: &OutPoint) -> Option<MemPoolEntry> {
         self.spents
             .remove(out_point)
-            .map(|txid| self.transactions.remove(&txid).unwrap())
+            .and_then(|txid| self.transactions.remove(&txid))
     }
 }
