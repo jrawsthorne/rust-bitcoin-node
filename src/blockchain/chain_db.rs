@@ -282,7 +282,7 @@ impl ChainDB {
             self.connect_block(&mut batch, entry, block, view)?;
 
             let chain_state = self.pending.as_mut().unwrap().commit(hash);
-            batch.insert(Key::ChainState, &chain_state)?;
+            batch.insert(Key::ChainState, chain_state)?;
 
             Ok(())
         };
@@ -638,7 +638,7 @@ impl ChainState {
         self.value -= coin.value;
     }
 
-    pub fn commit(mut self, hash: BlockHash) -> ChainState {
+    pub fn commit(&mut self, hash: BlockHash) -> &ChainState {
         self.tip = hash;
         self.commited = true;
         self
