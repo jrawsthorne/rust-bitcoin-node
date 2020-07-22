@@ -137,11 +137,13 @@ impl CompactBlock {
             indexes,
         }
     }
+}
 
-    pub fn into_block(self) -> Block {
-        Block {
-            header: self.header,
-            txdata: self.available.into_iter().map(Option::unwrap).collect(),
+impl From<CompactBlock> for Block {
+    fn from(block: CompactBlock) -> Self {
+        Self {
+            header: block.header,
+            txdata: block.available.into_iter().map(Option::unwrap).collect(),
         }
     }
 }

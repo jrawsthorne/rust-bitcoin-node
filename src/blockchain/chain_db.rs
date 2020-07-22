@@ -1,22 +1,20 @@
 use super::ChainEntry;
 use crate::blockstore::{BlockStore, BlockStoreOptions};
 use crate::coins::{CoinEntry, CoinView};
-use crate::db::{
-    Batch, Database, DiskDatabase, Iter, IterMode, Key, COL_CHAIN_ENTRY, COL_CHAIN_ENTRY_HASH,
-    COL_CHAIN_WORK, COL_VERSION_BIT_STATE,
-};
+use crate::db::{Batch, DBKey, Database, DiskDatabase, Iter, IterMode};
 use crate::error::DBError;
 use crate::protocol::{NetworkParams, ThresholdState};
 use bitcoin::Amount;
 use bitcoin::{
-    consensus::{
-        encode::{deserialize, serialize},
-        Decodable,
-    },
+    consensus::{encode::deserialize, Decodable, Encodable},
+    util::uint::Uint256,
     Block, BlockHash, OutPoint, Transaction, TxOut,
 };
 use log::info;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::{
+    collections::{HashMap, HashSet, VecDeque},
+    sync::Arc,
+};
 
 #[derive(Default)]
 pub struct ChainEntryCache {
@@ -33,18 +31,16 @@ enum ChainEntryCacheOperation {
 }
 
 impl ChainEntryCache {
-    pub fn new(db: &DiskDatabase) -> Self {
+    pub fn new(db: &DiskDatabase<Key>) -> Self {
+        info!("Populating entry cache");
         let mut cache = Self::default();
         for (_, entry) in db
-            .iter_cf::<ChainEntry>(COL_CHAIN_ENTRY, IterMode::Start)
+            .iter_cf::<ChainEntry>(COL_ENTRY, IterMode::Start)
             .unwrap()
         {
             cache.hash.insert(entry.hash, entry);
         }
-        for (height, hash) in db
-            .iter_cf::<BlockHash>(COL_CHAIN_ENTRY_HASH, IterMode::Start)
-            .unwrap()
-        {
+        for (height, hash) in db.iter_cf::<BlockHash>(COL_HASH, IterMode::Start).unwrap() {
             let height = deserialize(&height).unwrap();
             cache.height.insert(height, hash);
         }
@@ -94,9 +90,7 @@ impl ChainEntryCache {
 pub struct ChainDB {
     entry_cache: ChainEntryCache,
     pub state: ChainState,
-    pub db: DiskDatabase,
-    /// Allows for atomic writes to the database
-    current: Option<Batch>,
+    pub db: DiskDatabase<Key>,
     /// Allows for atomic chain state update
     pending: Option<ChainState>,
     network_params: NetworkParams,
@@ -112,7 +106,7 @@ pub struct ChainDBOptions {
 
 impl ChainDB {
     pub fn new(network_params: NetworkParams, options: ChainDBOptions) -> Self {
-        let db = DiskDatabase::new(options.path.clone());
+        let db = DiskDatabase::new(options.path.clone(), key::columns());
         let entry_cache = ChainEntryCache::new(&db);
 
         Self {
@@ -126,7 +120,6 @@ impl ChainDB {
             db,
             entry_cache,
             state: Default::default(),
-            current: Default::default(),
             pending: Default::default(),
             invalid: Default::default(),
             most_work: Default::default(),
@@ -184,7 +177,7 @@ impl ChainDB {
         Ok(cache)
     }
 
-    fn save_version_bits_cache(&mut self) -> Result<(), DBError> {
+    fn save_version_bits_cache(&mut self, batch: &mut Batch<Key>) -> Result<(), DBError> {
         let updates = &self.version_bits_cache.updates;
 
         if updates.is_empty() {
@@ -193,13 +186,8 @@ impl ChainDB {
 
         info!("Saving {} state cache updates.", updates.len());
 
-        assert!(self.current.is_some());
-
         for update in updates {
-            self.current
-                .as_mut()
-                .unwrap()
-                .insert(Key::VersionBitState(update.bit, update.hash), &update.state)?;
+            batch.insert(Key::VersionBitState(update.bit, update.hash), &update.state)?;
         }
 
         Ok(())
@@ -207,7 +195,9 @@ impl ChainDB {
 
     pub fn write_block(&mut self, block: &Block) -> Result<(), DBError> {
         let hash = block.block_hash();
-        self.blocks.write(hash, &serialize(block))
+        let mut b = Vec::with_capacity(block.get_size());
+        block.consensus_encode(&mut b).unwrap();
+        self.blocks.write(hash, &b)
     }
 
     pub fn get_block(&self, hash: BlockHash) -> Result<Option<Block>, DBError> {
@@ -269,32 +259,30 @@ impl ChainDB {
         block: &Block,
         view: &CoinView,
     ) -> Result<(), DBError> {
-        self.start();
+        let mut batch = self.start();
         let mut connect = || {
             let hash = block.block_hash();
 
             // Hash -> Next Block
             if !entry.is_genesis() {
-                self.batch()
-                    .insert(Key::ChainNextHash(entry.prev_block), &hash)?;
+                batch.insert(Key::NextHash(entry.prev_block), &hash)?;
             }
 
             // Height -> Hash
-            self.batch()
-                .insert(Key::ChainEntryHash(entry.height), &hash)?;
+            batch.insert(Key::Hash(entry.height), &hash)?;
             self.entry_cache.insert_height_batch(entry);
 
             // Hash -> Entry
             self.entry_cache.insert_hash_batch(entry);
 
             // update version bits cache
-            self.save_version_bits_cache()?;
+            self.save_version_bits_cache(&mut batch)?;
 
             // Connect block and save coins.
-            self.connect_block(entry, block, view)?;
+            self.connect_block(&mut batch, entry, block, view)?;
 
-            let chain_state = *self.pending.as_mut().unwrap().commit(hash);
-            self.batch().insert(Key::ChainState, &chain_state)?;
+            let chain_state = self.pending.as_mut().unwrap().commit(hash);
+            batch.insert(Key::ChainState, &chain_state)?;
 
             Ok(())
         };
@@ -302,23 +290,18 @@ impl ChainDB {
             self.drop();
             return Err(err);
         }
-        self.commit()?;
+        self.commit(batch)?;
         Ok(())
     }
 
-    fn batch(&mut self) -> &mut Batch {
-        assert!(self.current.is_some());
-        self.current.as_mut().unwrap()
-    }
+    pub fn disconnect(&mut self) {}
 
-    fn commit(&mut self) -> Result<(), DBError> {
-        assert!(self.current.is_some());
+    fn commit(&mut self, batch: Batch<Key>) -> Result<(), DBError> {
         assert!(self.pending.is_some());
 
-        let current = self.current.take().unwrap();
         let pending = self.pending.take().unwrap();
 
-        if let Err(error) = self.db.write_batch(current) {
+        if let Err(error) = self.db.write_batch(batch) {
             self.entry_cache.clear_batch();
             return Err(error);
         }
@@ -334,10 +317,8 @@ impl ChainDB {
     }
 
     fn drop(&mut self) {
-        assert!(self.current.is_some());
         assert!(self.pending.is_some());
 
-        self.current.take();
         self.pending.take();
 
         self.entry_cache.clear_batch();
@@ -352,8 +333,8 @@ impl ChainDB {
         self.entry_cache.hash.get(hash)
     }
 
-    pub fn get_entry_by_height(&self, height: &u32) -> Option<&ChainEntry> {
-        let hash = self.entry_cache.height.get(height)?;
+    pub fn get_entry_by_height(&self, height: u32) -> Option<&ChainEntry> {
+        let hash = self.entry_cache.height.get(&height)?;
         Some(&self.entry_cache.hash[hash])
     }
 
@@ -391,27 +372,36 @@ impl ChainDB {
         self.db.get(Key::Coin(prevout))
     }
 
-    pub fn has_coins(&self, tx: &Transaction) -> bool {
+    pub fn has_coins(&self, tx: &Transaction) -> Result<bool, DBError> {
         let txid = tx.txid();
 
-        (0..tx.output.len() as u32).any(|vout| {
-            let key = Key::Coin(OutPoint { txid, vout });
-            self.db.has(key).unwrap()
-        })
+        for vout in 0..tx.output.len() {
+            let key = Key::Coin(OutPoint {
+                txid,
+                vout: vout as u32,
+            });
+            if self.db.has(key)? {
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
     }
 
-    fn start(&mut self) {
-        assert!(self.current.is_none());
+    fn start(&mut self) -> Batch<Key> {
         assert!(self.pending.is_none());
 
-        self.current.replace(Batch::default());
+        let batch = Batch::new();
         self.pending.replace(self.state);
 
         self.entry_cache.clear_batch();
+
+        batch
     }
 
     fn connect_block(
         &mut self,
+        batch: &mut Batch<Key>,
         entry: ChainEntry,
         block: &Block,
         view: &CoinView,
@@ -441,18 +431,18 @@ impl ChainDB {
             }
         }
 
-        self.save_view(view)?;
+        self.save_view(batch, view)?;
 
         Ok(())
     }
 
-    fn save_view(&mut self, view: &CoinView) -> Result<(), DBError> {
+    fn save_view(&mut self, batch: &mut Batch<Key>, view: &CoinView) -> Result<(), DBError> {
         for (outpoint, coin) in &view.map {
             if coin.spent {
-                self.batch().remove(Key::Coin(*outpoint));
+                batch.remove(Key::Coin(*outpoint));
                 continue;
             }
-            self.batch().insert(Key::Coin(*outpoint), coin)?;
+            batch.insert(Key::Coin(*outpoint), coin)?;
         }
         Ok(())
     }
@@ -466,7 +456,7 @@ impl ChainDB {
 
         if self.is_main_chain(entry) {
             return self
-                .get_entry_by_height(&height)
+                .get_entry_by_height(height)
                 .expect("in main chain so must exist");
         }
 
@@ -513,7 +503,7 @@ impl ChainDB {
     }
 
     pub fn get_next_hashes(&self, hash: BlockHash) -> Result<Vec<BlockHash>, DBError> {
-        let hashes = self.db.get(Key::ChainNextHashes(hash))?.unwrap_or_default();
+        let hashes = self.db.get(Key::NextHashes(hash))?.unwrap_or_default();
         Ok(hashes)
     }
 
@@ -527,7 +517,7 @@ impl ChainDB {
     }
 
     pub fn get_next_hash(&self, hash: BlockHash) -> Result<Option<BlockHash>, DBError> {
-        self.db.get(Key::ChainNextHash(hash))
+        self.db.get(Key::NextHash(hash))
     }
 
     pub fn get_next(&self, entry: &ChainEntry) -> Result<Option<&ChainEntry>, DBError> {
@@ -552,23 +542,20 @@ impl ChainDB {
     }
 
     pub fn save_entry(&mut self, mut entry: ChainEntry, prev: &ChainEntry) -> Result<(), DBError> {
-        self.start();
+        let mut batch = self.start();
         let mut save_entry = || {
             let hash = entry.hash;
 
             // Hash -> Height
-            self.batch()
-                .insert(Key::ChainEntryHeight(hash), &entry.height)?;
+            batch.insert(Key::Height(hash), &entry.height)?;
 
             // Hash -> Entry
-            self.batch().insert(Key::ChainEntry(hash), &entry)?;
+            batch.insert(Key::Entry(hash), &entry)?;
             self.entry_cache.insert_hash_batch(entry);
 
             // Tip chainwork index.
-            self.batch()
-                .remove(Key::ChainWork(prev.chainwork, prev.hash));
-            self.batch()
-                .insert(Key::ChainWork(entry.chainwork, hash), &entry)?;
+            batch.remove(Key::ChainWork(prev.chainwork, prev.hash));
+            batch.insert(Key::ChainWork(entry.chainwork, hash), &entry)?;
 
             if !entry.is_genesis() {
                 let skip = self.get_skip(&entry);
@@ -577,10 +564,9 @@ impl ChainDB {
 
             let mut nexts = self.get_next_hashes(prev.hash)?;
             nexts.push(hash);
-            self.batch()
-                .insert(Key::ChainNextHashes(prev.hash), &nexts)?;
+            batch.insert(Key::NextHashes(prev.hash), &nexts)?;
 
-            self.save_version_bits_cache()?;
+            self.save_version_bits_cache(&mut batch)?;
 
             Ok(())
         };
@@ -588,7 +574,7 @@ impl ChainDB {
             self.drop();
             return Err(err);
         }
-        self.commit()?;
+        self.commit(batch)?;
         self.update_most_work(entry);
         Ok(())
     }
@@ -652,7 +638,7 @@ impl ChainState {
         self.value -= coin.value;
     }
 
-    pub fn commit(&mut self, hash: BlockHash) -> &ChainState {
+    pub fn commit(mut self, hash: BlockHash) -> ChainState {
         self.tip = hash;
         self.commited = true;
         self
@@ -724,5 +710,149 @@ pub struct VersionBitsCacheUpdate {
 impl VersionBitsCacheUpdate {
     pub fn new(bit: u8, hash: BlockHash, state: ThresholdState) -> Self {
         Self { bit, hash, state }
+    }
+}
+
+use key::*;
+
+mod key {
+    use super::*;
+    use crate::db::{DBValue, KEY_CHAIN_STATE, KEY_TIP};
+    use bitcoin::consensus::{encode, Encodable};
+
+    pub const COL_ENTRY: &str = "E";
+    pub const COL_HEIGHT: &str = "H";
+    pub const COL_HASH: &str = "h";
+    pub const COL_COIN: &str = "C";
+    pub const COL_CHAIN_WORK: &str = "c";
+    pub const COL_NEXT_HASH: &str = "N";
+    pub const COL_NEXT_HASHES: &str = "n";
+    pub const COL_MISC: &str = "M";
+    pub const COL_SKIP: &str = "S";
+    pub const COL_VERSION_BIT_STATE: &str = "V";
+
+    pub fn columns() -> Vec<&'static str> {
+        vec![
+            COL_ENTRY,
+            COL_HEIGHT,
+            COL_HASH,
+            COL_COIN,
+            COL_CHAIN_WORK,
+            COL_NEXT_HASH,
+            COL_NEXT_HASHES,
+            COL_MISC,
+            COL_SKIP,
+            COL_VERSION_BIT_STATE,
+        ]
+    }
+
+    pub enum Key {
+        Entry(BlockHash),
+        Coin(OutPoint),
+        Hash(u32),
+        Height(BlockHash),
+        NextHash(BlockHash),
+        NextHashes(BlockHash),
+        ChainState,
+        Tip,
+        ChainWork(Uint256, BlockHash),
+        Skip(BlockHash),
+        VersionBitState(u8, BlockHash),
+    }
+
+    impl Key {
+        pub fn insert<V: DBValue>(&self, db: &rocksdb::DB, value: V) {
+            match self {
+                Key::Entry(hash)
+                | Key::Height(hash)
+                | Key::NextHash(hash)
+                | Key::NextHashes(hash)
+                | Key::Skip(hash) => self.i(db, hash, value),
+                Key::Coin(outpoint) => {
+                    let mut key = [0u8; 36];
+                    outpoint.consensus_encode(&mut key[..]).unwrap();
+                    self.i(db, key.as_ref(), value);
+                }
+                Key::Hash(a) => {
+                    self.i(db, a.to_le_bytes(), value);
+                }
+                Key::ChainState => {
+                    self.i(db, KEY_CHAIN_STATE, value);
+                }
+                Key::Tip => {
+                    self.i(db, KEY_TIP, value);
+                }
+                Key::ChainWork(work, hash) => {
+                    let mut key = [0u8; 64];
+                    work.consensus_encode(&mut key[..]).unwrap();
+                    hash.consensus_encode(&mut key[..]).unwrap();
+                    self.i(db, key.as_ref(), value);
+                }
+                Key::VersionBitState(bit, hash) => {
+                    let mut key = [0u8; 33];
+                    bit.consensus_encode(&mut key[..]).unwrap();
+                    hash.consensus_encode(&mut key[..]).unwrap();
+                    self.i(db, key.as_ref(), value);
+                }
+            }
+        }
+
+        fn i(&self, db: &rocksdb::DB, key: impl AsRef<[u8]>, value: impl DBValue) {
+            db.put_cf(
+                db.cf_handle(self.col()).unwrap(),
+                key,
+                value.encode().unwrap(),
+            )
+            .unwrap()
+        }
+    }
+
+    impl DBKey for Key {
+        fn encode(&self) -> Result<Vec<u8>, encode::Error> {
+            Ok(match self {
+                Key::Coin(outpoint) => {
+                    let mut encoder = Vec::with_capacity(36);
+                    outpoint.txid.consensus_encode(&mut encoder)?;
+                    outpoint.vout.consensus_encode(&mut encoder)?;
+                    encoder
+                }
+                Key::Hash(height) => height.to_le_bytes().into(),
+                Key::Entry(hash)
+                | Key::Height(hash)
+                | Key::NextHash(hash)
+                | Key::NextHashes(hash)
+                | Key::Skip(hash) => hash.as_ref().into(),
+                Key::Tip => KEY_TIP.to_vec(),
+                Key::ChainState => KEY_CHAIN_STATE.to_vec(),
+                Key::ChainWork(work, hash) => {
+                    let mut encoder = Vec::with_capacity(64);
+                    work.consensus_encode(&mut encoder)?;
+                    hash.consensus_encode(&mut encoder)?;
+                    encoder
+                }
+
+                Key::VersionBitState(bit, hash) => {
+                    let mut encoder = Vec::with_capacity(33);
+                    bit.consensus_encode(&mut encoder)?;
+                    hash.consensus_encode(&mut encoder)?;
+                    encoder
+                }
+            })
+        }
+
+        fn col(&self) -> &'static str {
+            match self {
+                Key::Entry(_) => COL_ENTRY,
+                Key::Coin(_) => COL_COIN,
+                Key::Hash(_) => COL_HASH,
+                Key::Height(_) => COL_HEIGHT,
+                Key::NextHash(_) => COL_NEXT_HASH,
+                Key::ChainState | Key::Tip => COL_MISC,
+                Key::ChainWork(_, _) => COL_CHAIN_WORK,
+                Key::NextHashes(_) => COL_NEXT_HASHES,
+                Key::Skip(_) => COL_SKIP,
+                Key::VersionBitState(_, _) => COL_VERSION_BIT_STATE,
+            }
+        }
     }
 }

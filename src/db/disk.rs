@@ -1,44 +1,16 @@
-use super::{batch::Operation, Batch, DBValue, Database, Key};
+use super::{batch::Operation, Batch, DBKey, DBValue, Database};
 use crate::error::DBError;
 use rocksdb::{ColumnFamily, DBIterator, Direction, IteratorMode, Options, WriteBatch, DB};
 use std::marker::PhantomData;
-use std::path::PathBuf;
-
-pub const COL_CHAIN_ENTRY: &str = "0";
-pub const COL_CHAIN_ENTRY_HEIGHT: &str = "1";
-pub const COL_CHAIN_ENTRY_HASH: &str = "2";
-pub const COL_COIN: &str = "3";
-pub const COL_NEXT_HASH: &str = "4";
-pub const COL_MISC: &str = "5";
-pub const COL_CHAIN_WORK: &str = "6";
-pub const COL_CHAIN_NEXT_HASHES: &str = "7";
-pub const COL_CHAIN_SKIP: &str = "8";
-pub const COL_BLOCKSTORE_FILE: &str = "9";
-pub const COL_BLOCKSTORE_LAST_FILE: &str = "10";
-pub const COL_BLOCKSTORE_BLOCK_RECORD: &str = "11";
-pub const COL_VERSION_BIT_STATE: &str = "12";
+use std::path::Path;
 
 pub const KEY_TIP: [u8; 1] = [0];
 pub const KEY_CHAIN_STATE: [u8; 1] = [1];
 
-pub const COLUMNS: [&str; 13] = [
-    COL_CHAIN_ENTRY,
-    COL_CHAIN_ENTRY_HEIGHT,
-    COL_CHAIN_ENTRY_HASH,
-    COL_COIN,
-    COL_NEXT_HASH,
-    COL_MISC,
-    COL_CHAIN_WORK,
-    COL_CHAIN_NEXT_HASHES,
-    COL_CHAIN_SKIP,
-    COL_BLOCKSTORE_FILE,
-    COL_BLOCKSTORE_LAST_FILE,
-    COL_BLOCKSTORE_BLOCK_RECORD,
-    COL_VERSION_BIT_STATE,
-];
-
-pub struct DiskDatabase {
+pub struct DiskDatabase<K: DBKey> {
     db: DB,
+    columns: Vec<&'static str>,
+    _key: PhantomData<K>,
 }
 
 pub struct Iter<'a, V: DBValue> {
@@ -59,10 +31,10 @@ impl<'a, V: DBValue> Iterator for Iter<'a, V> {
     }
 }
 
-pub enum IterMode {
+pub enum IterMode<K: DBKey> {
     Start,
     End,
-    From(Key, IterDirection),
+    From(K, IterDirection),
 }
 
 pub enum IterDirection {
@@ -70,23 +42,24 @@ pub enum IterDirection {
     Reverse,
 }
 
-impl DiskDatabase {
-    pub fn new(path: PathBuf) -> Self {
+impl<K: DBKey> DiskDatabase<K> {
+    pub fn new(path: impl AsRef<Path>, columns: Vec<&'static str>) -> Self {
         let mut db_options = Options::default();
         db_options.create_if_missing(true);
         db_options.create_missing_column_families(true);
+        db_options.increase_parallelism(4);
 
         let db = Self {
-            db: DB::open_cf(&db_options, path, &COLUMNS).unwrap(),
+            db: DB::open_cf(&db_options, path, &columns).unwrap(),
+            columns,
+            _key: PhantomData::default(),
         };
-
-        db.compact();
 
         db
     }
 
-    fn compact(&self) {
-        for column in &COLUMNS {
+    pub fn compact(&self) {
+        for column in &self.columns {
             let col = self.col(column).unwrap();
             self.db
                 .compact_range_cf::<Vec<u8>, Vec<u8>>(col, None, None);
@@ -102,7 +75,7 @@ impl DiskDatabase {
     pub fn iter_cf<V: DBValue>(
         &self,
         col: &'static str,
-        mode: IterMode,
+        mode: IterMode<K>,
     ) -> Result<Iter<V>, DBError> {
         let col = self.col(col)?;
 
@@ -124,7 +97,7 @@ impl DiskDatabase {
             }
         };
 
-        let iter = self.db.iterator_cf(col, mode)?;
+        let iter = self.db.iterator_cf(col, mode);
 
         Ok(Iter {
             iter,
@@ -133,20 +106,20 @@ impl DiskDatabase {
     }
 }
 
-impl Database for DiskDatabase {
-    fn insert<V: DBValue>(&self, key: Key, value: &V) -> Result<(), DBError> {
+impl<K: DBKey> Database<K> for DiskDatabase<K> {
+    fn insert(&self, key: K, value: &impl DBValue) -> Result<(), DBError> {
         let col = self.col(key.col())?;
         self.db.put_cf(col, key.encode()?, value.encode()?)?;
         Ok(())
     }
 
-    fn remove(&self, key: Key) -> Result<(), DBError> {
+    fn remove(&self, key: K) -> Result<(), DBError> {
         let col = self.col(key.col())?;
         self.db.delete_cf(col, key.encode()?)?;
         Ok(())
     }
 
-    fn get<V: DBValue>(&self, key: Key) -> Result<Option<V>, DBError> {
+    fn get<V: DBValue>(&self, key: K) -> Result<Option<V>, DBError> {
         let col = self.col(key.col())?;
         let raw = self.db.get_pinned_cf(col, key.encode()?)?;
         Ok(match raw {
@@ -155,17 +128,17 @@ impl Database for DiskDatabase {
         })
     }
 
-    fn write_batch(&self, batch: Batch) -> Result<(), DBError> {
+    fn write_batch(&self, batch: Batch<K>) -> Result<(), DBError> {
         let mut write_batch = WriteBatch::default();
         for operation in batch.operations {
             match operation {
                 Operation::Insert(key, value) => {
                     let col = self.col(key.col())?;
-                    write_batch.put_cf(col, key.encode()?, value)?;
+                    write_batch.put_cf(col, key.encode()?, value);
                 }
                 Operation::Remove(key) => {
                     let col = self.col(key.col())?;
-                    write_batch.delete_cf(col, key.encode()?)?;
+                    write_batch.delete_cf(col, key.encode()?);
                 }
             }
         }
@@ -173,7 +146,7 @@ impl Database for DiskDatabase {
         Ok(())
     }
 
-    fn has(&self, key: Key) -> Result<bool, DBError> {
+    fn has(&self, key: K) -> Result<bool, DBError> {
         let col = self.col(key.col())?;
         let value = self.db.get_pinned_cf(col, key.encode()?)?;
         Ok(value.is_some())

@@ -1,24 +1,25 @@
 use crate::blockchain::Chain;
 use crate::coins::CoinView;
 use crate::{
-    error::TransactionVerificationError,
+    error::{DBError, TransactionVerificationError},
+    primitives::TransactionExt,
     protocol::consensus::{LockFlags, ScriptFlags},
     util::ms_since,
-    verification::TransactionVerifier,
     ChainEntry, CoinEntry,
 };
 use bitcoin::Transaction;
 use bitcoin::{OutPoint, Txid};
 use log::{debug, error, info};
-use std::{collections::HashMap, time::SystemTime};
+use std::{collections::HashMap, time::Instant};
 use thiserror::Error;
 
 pub struct MemPoolEntry {
     /// the transaction
     pub tx: Transaction,
     /// height of chain when transaction was added to pool
-    height: u32,
-    coinbase: bool,
+    pub height: u32,
+    /// one of the inputs is the output of a coinbase tx (can only be spent after 100 blocks)
+    pub coinbase: bool,
 }
 
 impl MemPoolEntry {
@@ -52,6 +53,8 @@ pub enum MempoolError {
     DoubleSpend,
     #[error("orphan")]
     Orphan,
+    #[error(transparent)]
+    DBError(#[from] DBError),
 }
 
 #[derive(Default)]
@@ -80,7 +83,7 @@ impl MemPool {
 
     /// add a transaction
     pub fn add_tx(&mut self, chain: &Chain, tx: Transaction) -> Result<(), MempoolError> {
-        let start = SystemTime::now();
+        let start = Instant::now();
 
         let lock_flags = LockFlags::STANDARD_LOCKTIME_FLAGS;
         let height = chain.height;
@@ -96,10 +99,8 @@ impl MemPool {
             return Err(MempoolError::PrematureTxVersion);
         }
 
-        if !chain.state.has_witness() {
-            if tx.has_witness() {
-                return Err(MempoolError::PrematureWitness);
-            }
+        if !chain.state.has_witness() && tx.has_witness() {
+            return Err(MempoolError::PrematureWitness);
         }
 
         if !chain.verify_final(&chain.tip, &tx, &lock_flags) {
@@ -110,7 +111,7 @@ impl MemPool {
             return Err(MempoolError::Duplicate);
         }
 
-        if chain.db.has_coins(&tx) {
+        if chain.db.has_coins(&tx)? {
             return Err(MempoolError::Duplicate);
         }
 

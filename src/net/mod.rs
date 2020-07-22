@@ -1,10 +1,7 @@
-// mod codec;
-// mod connection;
-// mod p2p;
-// mod peer;
-
-// pub use p2p::P2P;
-// pub use peer::{Peer, PeerId};
+mod bloom_filter;
 mod compact_block;
-pub mod newp2p;
+mod new;
+
+pub use bloom_filter::BloomFilter;
 pub use compact_block::CompactBlock;
+pub use new::{Peer, Pool};

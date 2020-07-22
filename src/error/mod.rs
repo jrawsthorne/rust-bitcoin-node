@@ -32,7 +32,8 @@ pub enum TransactionVerificationError {
     NonFinal,
     #[error("bad sigops count")]
     BadSigops,
-
+    #[error("duplicate txid")]
+    DuplicateTxid,
     #[error("invalid scripts")]
     InvalidScripts,
 }
@@ -93,4 +94,6 @@ pub enum DBError {
     EncodeError(#[from] bitcoin::consensus::encode::Error),
     #[error("{0}")]
     Other(&'static str),
+    #[error(transparent)]
+    IoError(#[from] std::io::Error),
 }

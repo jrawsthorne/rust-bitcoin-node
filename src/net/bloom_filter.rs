@@ -1,9 +1,10 @@
+use crate::primitives::ScriptExt;
 use bitcoin::{
     blockdata::script::Instruction,
     consensus::Encodable,
     hashes::sha256d,
     network::message_bloom::{BloomFlags, FilterLoad},
-    OutPoint, Script, Transaction,
+    OutPoint, Transaction,
 };
 use murmur3::murmur3_32;
 use std::f64::consts::LN_2;
@@ -163,7 +164,7 @@ impl BloomFilter {
                                 }
                                 BloomFlags::PubkeyOnly => {
                                     if output.script_pubkey.is_p2pk()
-                                        || is_multisig(&output.script_pubkey)
+                                        || output.script_pubkey.is_multisig()
                                     {
                                         self.insert_outpoint(&OutPoint {
                                             txid,
@@ -212,56 +213,14 @@ impl BloomFilter {
     }
 }
 
-fn is_multisig(script: &Script) -> bool {
-    use bitcoin::blockdata::opcodes::all::{OP_CHECKMULTISIG, OP_PUSHNUM_1, OP_PUSHNUM_16};
-    // multisig is m <n pubkeys> n OP_CHECKMULTISIG
-
-    fn read_small_int(byte: u8) -> Option<u8> {
-        if byte >= OP_PUSHNUM_1.into_u8() && byte <= OP_PUSHNUM_16.into_u8() {
-            Some(byte - 0x50)
-        } else {
-            None
-        }
-    }
-
-    let bytes = &script[..];
-    if script.len() < 3 || bytes[bytes.len() - 1] != OP_CHECKMULTISIG.into_u8() {
-        return false;
-    }
-    let m = match read_small_int(bytes[0]) {
-        None => return false,
-        Some(m) => m,
-    };
-    let n = match read_small_int(bytes[bytes.len() - 2]) {
-        None => return false,
-        Some(n) => n,
-    };
-    if m > n {
-        return false;
-    }
-    let mut keys = 0;
-
-    for instruction in script.iter(false).skip(1).take(n as usize) {
-        match instruction {
-            Instruction::PushBytes(bytes) if bytes.len() == 33 || bytes.len() == 65 => {
-                keys += 1;
-            }
-            _ => return false,
-        }
-    }
-
-    keys == n
-}
-
 #[cfg(test)]
 mod test {
     use super::*;
     use bitcoin::{
-        blockdata::script::Builder,
         consensus::{deserialize, serialize},
         hashes::{hash160, hex::FromHex},
         secp256k1::Secp256k1,
-        Block, MerkleBlock, PrivateKey, PublicKey, Txid,
+        Block, MerkleBlock, PrivateKey, Txid,
     };
 
     fn hex(str: &str) -> Vec<u8> {
@@ -659,20 +618,5 @@ mod test {
             txid: htxid("02981fa052f0481dbc5868f4fc2166035a10f27a03cfd2de67326471df5bc041",),
             vout: 0,
         }));
-    }
-
-    #[test]
-    fn test_multisig() {
-        let tx:Transaction=deserialize(&hex("010000000337bd40a022eea1edd40a678cddabe200b131afd5797b232ac21861d8e97eb367020000008a4730440220e8343f8ac7e96582d92a450ce314668db4f7a0e2c94a97aa6df026f93ebee2290220866b5728d4247688d91b4a30144762bc8bfd7f385de7f7d326d665ff5e3e900301410461cbdcc5409fb4b4d42b51d33381354d80e550078cb532a34bfa2fcfdeb7d76519aecc62770f5b0e4ef8551946d8a540911abe3e7854a26f39f58b25c15342afffffffff96420befb14a9357181e5da089824a3e6ea5a95856ff74c06c7d5ea98d633cf9020000008a4730440220b7227a8f816f3810f97057102edf8be4434c1e00f48b4440976bcc478f1431030220af3cba150afdd44618de4369cdc65fea73e447d7b5fbe135d2f08f86d82aa85f01410461cbdcc5409fb4b4d42b51d33381354d80e550078cb532a34bfa2fcfdeb7d76519aecc62770f5b0e4ef8551946d8a540911abe3e7854a26f39f58b25c15342afffffffff96420befb14a9357181e5da089824a3e6ea5a95856ff74c06c7d5ea98d633cf9010000008a47304402207d689e1a61e06440eab18d961517a97c49219a91f2c59d9630e902fcb2f4ea8b0220dcd274349ca264d8bd2bee5135664a92899e94a319a349d6d6e3660d04b564ad0141047a4c5d104002ebc203bef5cab6f13ff57ab624bb5f9f1186beb64c83a396da0d912e11a18ea15a2c784a62fed2bbd8258c3413c18bf4c3f2ba28f3d5565e328bffffffff0340420f000000000087514104cc71eb30d653c0c3163990c47b976f3fb3f37cccdcbedb169a1dfef58bbfbfaff7d8a473e7e2e6d317b87bafe8bde97e3cf8f065dec022b51d11fcdd0d348ac4410461cbdcc5409fb4b4d42b51d33381354d80e550078cb532a34bfa2fcfdeb7d76519aecc62770f5b0e4ef8551946d8a540911abe3e7854a26f39f58b25c15342af52ae50cec402000000001976a914c812a297b8e0e778d7a22bb2cd6d23c3e789472b88ac20a10700000000001976a914641ad5051edd97029a003fe9efb29359fcee409d88ac00000000")).unwrap();
-        assert!(is_multisig(&tx.output[0].script_pubkey));
-
-        let random = Builder::new()
-            .push_int(1)
-            .push_key(&PublicKey::from_slice(&hex("0447d5317e5c2c9fded801aadc8daed23294f0742b14bc681ef45c0a18115a8674e92a8f73c2d33702690a620eb1edf78b4ddcdc941a7405d762cd5203289a2f93")).unwrap())
-            .push_int(1)
-            .push_opcode(bitcoin::blockdata::opcodes::all::OP_CHECKMULTISIG)
-            .into_script();
-
-        assert!(is_multisig(&random));
     }
 }

@@ -1,7 +1,9 @@
 use super::BlockTemplate;
 use crate::blockchain::{Chain, ChainEntry};
 
-use bitcoin::{Address, Block, BlockHeader, Network, PublicKey};
+use bitcoin::{
+    util::hash::bitcoin_merkle_root, Address, Block, BlockHeader, Network, PublicKey, Transaction,
+};
 use log::debug;
 use std::time::UNIX_EPOCH;
 
@@ -48,12 +50,18 @@ impl Miner {
     }
 
     // single threaded miner for creating test blocks
-    pub fn mine_block(template: BlockTemplate) -> Block {
+    pub fn mine_block(template: BlockTemplate, mut transactions: Vec<Transaction>) -> Block {
         let coinbase = template.create_coinbase();
+
+        transactions.insert(0, coinbase);
+
+        let hashes = transactions.iter().map(|obj| obj.txid().as_hash());
+        let mr = bitcoin_merkle_root(hashes).into();
+
         let mut block_header = BlockHeader {
             version: template.version,
             prev_blockhash: template.prev_blockhash,
-            merkle_root: coinbase.txid().as_hash().into(),
+            merkle_root: mr,
             time: template.time,
             bits: template.target,
             nonce: 0,
@@ -65,11 +73,11 @@ impl Miner {
 
         Block {
             header: block_header,
-            txdata: vec![coinbase],
+            txdata: transactions,
         }
     }
 
-    fn get_address(&self) -> Address {
+    pub fn get_address(&self) -> Address {
         use bitcoin::secp256k1::{rand::thread_rng, Secp256k1};
 
         let secp = Secp256k1::new();

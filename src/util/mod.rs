@@ -1,4 +1,4 @@
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime};
 
 pub fn now() -> u64 {
     use std::time::UNIX_EPOCH;
@@ -8,6 +8,6 @@ pub fn now() -> u64 {
         .as_secs()
 }
 
-pub fn ms_since(start: &SystemTime) -> f32 {
-    start.elapsed().unwrap().as_secs_f32() * 1000.0
+pub fn ms_since(start: &Instant) -> f32 {
+    start.elapsed().as_secs_f32() * 1000.0
 }

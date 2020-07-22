@@ -1,60 +1,52 @@
 use bitcoin::Network;
-use log::LevelFilter;
-use parking_lot::RwLock;
-use rust_bitcoin_node::{
-    blockchain::{Chain, ChainListener, ChainOptions},
-    mempool::MemPool,
-    net::newp2p::{SharedMempool, P2P},
-};
-use std::sync::Arc;
-
-struct MemPoolChainListener {
-    mempool: SharedMempool,
-}
-
-impl ChainListener for MemPoolChainListener {
-    fn handle_connect(
-        &self,
-        _chain: &Chain,
-        entry: &rust_bitcoin_node::ChainEntry,
-        block: &bitcoin::Block,
-        _view: &rust_bitcoin_node::CoinView,
-    ) {
-        let mut mempool = self.mempool.write();
-        mempool.add_block(&block.txdata, entry.height);
-    }
-    fn handle_disconnect(
-        &self,
-        chain: &Chain,
-        entry: &rust_bitcoin_node::ChainEntry,
-        block: &bitcoin::Block,
-        _view: &rust_bitcoin_node::CoinView,
-    ) {
-        let mut mempool = self.mempool.write();
-        mempool.remove_block(chain, entry, &block.txdata);
-    }
-}
+use rust_bitcoin_node::{net::Peer, Config, FullNode};
+use std::net::{TcpListener, ToSocketAddrs};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    env_logger::builder()
-        .filter_module("rust_bitcoin_node", LevelFilter::Debug)
-        .format_timestamp_millis()
-        .init();
+    env_logger::builder().format_timestamp_millis().init();
 
-    let network = Network::Testnet;
-    let mempool = Arc::new(RwLock::new(MemPool::new()));
+    let args = std::env::args().collect::<Vec<_>>();
 
-    let chain = Arc::new(RwLock::new(
-        Chain::new(
-            ChainOptions::new(network, "./data"),
-            vec![Arc::new(MemPoolChainListener {
-                mempool: mempool.clone(),
-            })],
-        )
-        .unwrap(),
-    ));
+    let path = args.get(1).expect("must enter a path");
+    let network = match args
+        .get(2)
+        .expect("must enter a network (main, test, reg)")
+        .as_ref()
+    {
+        "main" => Network::Bitcoin,
+        "test" => Network::Testnet,
+        "reg" => Network::Regtest,
+        _ => panic!("must enter a valid network (main, test, reg)"),
+    };
+    let addr = args
+        .get(3)
+        .expect("must enter an addr")
+        .to_socket_addrs()
+        .expect("must enter a valid addr")
+        .next()
+        .expect("must enter a valid addr");
 
-    P2P::new(chain, network, mempool, "127.0.0.1:18333");
+    let full_node = FullNode::new(Config {
+        path: path.into(),
+        network: Network::Bitcoin,
+        mempool: false,
+        addr_index: false,
+        filter_index: false,
+        tx_index: false,
+        verify_scripts: false,
+    });
 
-    Ok(())
+    let pool = &full_node.pool;
+
+    let peer = Peer::new_outbound(addr, pool.clone(), network);
+
+    peer.send_version();
+
+    let listener = TcpListener::bind("127.0.0.1:55555").unwrap();
+
+    loop {
+        let inbound_peer = listener.incoming().next().unwrap().unwrap();
+
+        Peer::new_inbound(inbound_peer, pool.clone(), network);
+    }
 }

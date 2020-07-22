@@ -8,24 +8,25 @@ pub mod blockstore;
 pub mod coins;
 /// Store blockchain state
 pub mod db;
+/// Custom Errors
+pub mod error;
+/// Utility to combine all functionality
+mod full_node;
+/// Compact Block Filter, Transaction and Address indexers
+pub mod indexers;
 /// Manages a pool of transactions yet to be included in a block
 pub mod mempool;
 /// Basic CPU miner for use in tests
 pub mod mining;
 /// Send messages to and received messages from the Bitcoin P2P network
 pub mod net;
+/// Extensions to rust-bitcoin primitives
+pub mod primitives;
 /// Protocol details
 pub mod protocol;
 /// Utilities
 pub mod util;
-/// Verification
-pub mod verification;
-
-pub mod error;
-pub use blockchain::{ChainEntry, ChainListener};
 
 pub use blockchain::ChainEntry;
 pub use coins::{CoinEntry, CoinView};
-// pub use net::{Peer, PeerId, P2P};
-
-pub mod bloom_filter;
+pub use full_node::{Config, FullNode};

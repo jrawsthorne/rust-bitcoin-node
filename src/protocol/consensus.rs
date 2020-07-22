@@ -28,6 +28,7 @@ pub const SEQUENCE_DISABLE_FLAG: u32 = 1 << 31;
 pub const SEQUENCE_TYPE_FLAG: u32 = 1 << 22;
 pub const SEQUENCE_MASK: u32 = 0x0000ffff;
 pub const BIP34_IMPLIES_BIP30_LIMIT: u32 = 1_983_702;
+pub const MAX_SCRIPT_PUSH: usize = 520;
 
 bitflags::bitflags! {
     pub struct ScriptFlags: u32 {
@@ -106,28 +107,6 @@ pub fn get_block_subsidy(height: u32, network_params: &NetworkParams) -> u64 {
     }
 
     BASE_REWARD >> halvings
-}
-
-pub fn compact_to_target(bits: u32) -> Uint256 {
-    // This is a floating-point "compact" encoding originally used by
-    // OpenSSL, which satoshi put into consensus code, so we're stuck
-    // with it. The exponent needs to have 3 subtracted from it, hence
-    // this goofy decoding code:
-    let (mant, expt) = {
-        let unshifted_expt = bits >> 24;
-        if unshifted_expt <= 3 {
-            ((bits & 0xFFFFFF) >> (8 * (3 - unshifted_expt as usize)), 0)
-        } else {
-            (bits & 0xFFFFFF, 8 * ((bits >> 24) - 3))
-        }
-    };
-
-    // The mantissa is signed but may not be negative
-    if mant > 0x7FFFFF {
-        Default::default()
-    } else {
-        Uint256::from_u64(mant as u64).unwrap() << (expt as usize)
-    }
 }
 
 #[cfg(test)]

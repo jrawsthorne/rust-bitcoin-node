@@ -8,8 +8,8 @@ use crate::{
     error::{
         BlockHeaderVerificationError, BlockVerificationError, DBError, TransactionVerificationError,
     },
+    primitives::{BlockExt, TransactionExt},
     util::ms_since,
-    verification::{BlockVerifier, TransactionVerifier},
 };
 use bitcoin::{
     blockdata::constants::{
@@ -19,31 +19,11 @@ use bitcoin::{
     Block, BlockHash, BlockHeader, Network, Transaction,
 };
 use log::{debug, error, info, warn};
+use rayon::prelude::*;
 use std::collections::VecDeque;
-use std::{path::PathBuf, sync::Arc, time::SystemTime};
+use std::{path::PathBuf, time::Instant};
 
-/// Trait that handles chain events
-pub trait ChainListener: Send + Sync {
-    /// Called when a new block is added to the main chain
-    fn handle_connect(
-        &self,
-        _chain: &Chain,
-        _entry: &ChainEntry,
-        _block: &Block,
-        _view: &CoinView,
-    ) {
-    }
-    /// Called when a block is removed from the main chain. This happens
-    /// during a reorg or manual reindex
-    fn handle_disconnect(
-        &self,
-        _chain: &Chain,
-        _entry: &ChainEntry,
-        _block: &Block,
-        _view: &CoinView,
-    ) {
-    }
-}
+type OnConnect = Box<dyn Fn(&Chain, &ChainEntry, &Block, &CoinView) + Send + Sync>;
 
 pub struct Chain {
     pub db: ChainDB,
@@ -51,14 +31,11 @@ pub struct Chain {
     pub height: u32,
     options: ChainOptions,
     pub state: DeploymentState,
-    listeners: Vec<Arc<dyn ChainListener>>,
+    connect_listeners: Vec<OnConnect>,
 }
 
 impl Chain {
-    pub fn new(
-        options: ChainOptions,
-        listeners: Vec<Arc<dyn ChainListener>>,
-    ) -> Result<Self, DBError> {
+    pub fn new(options: ChainOptions) -> Result<Self, DBError> {
         let mut chain = Self {
             db: ChainDB::new(
                 options.network.clone(),
@@ -70,7 +47,7 @@ impl Chain {
             height: 0,
             options,
             state: DeploymentState::default(),
-            listeners,
+            connect_listeners: vec![],
         };
 
         chain.db.open()?;
@@ -88,6 +65,39 @@ impl Chain {
         chain.state = chain.get_deployment_state();
 
         Ok(chain)
+    }
+
+    pub fn height_to_hash_range(
+        &self,
+        start_height: u32,
+        end_hash: &BlockHash,
+        max_results: usize,
+    ) -> Vec<BlockHash> {
+        let end = self.db.get_entry_by_hash(end_hash).unwrap();
+        let end_height = end.height;
+
+        assert!(start_height < end_height);
+
+        let results_len = end_height - start_height + 1;
+
+        assert!(results_len as usize <= max_results);
+
+        let mut hashes = VecDeque::new();
+
+        let mut entry = end;
+        for _ in 0..results_len {
+            hashes.push_front(entry.hash);
+            entry = self.db.get_entry_by_hash(&entry.prev_block).unwrap();
+        }
+
+        hashes.into()
+    }
+
+    pub fn on_connect(
+        &mut self,
+        func: impl Fn(&Chain, &ChainEntry, &Block, &CoinView) + Send + Sync + 'static,
+    ) {
+        self.connect_listeners.push(Box::new(func));
     }
 
     fn set_deployment_state(&mut self, state: DeploymentState) {
@@ -482,7 +492,7 @@ impl Chain {
             if in_best_chain {
                 hash = self
                     .db
-                    .get_entry_by_height(&(height))
+                    .get_entry_by_height(height)
                     .expect("main chain so must exist by height")
                     .hash;
             } else {
@@ -504,6 +514,12 @@ impl Chain {
         best.time > time as u32
     }
 
+    pub fn synced(&self) -> bool {
+        let time = crate::util::now().saturating_sub(self.options.network.max_tip_age as u64);
+
+        self.tip.time > time as u32
+    }
+
     pub fn most_work(&self) -> &ChainEntry {
         self.db.most_work.as_ref().expect("chain db to be open")
     }
@@ -514,7 +530,7 @@ impl Chain {
         entry: ChainEntry,
         prev: ChainEntry,
     ) -> Result<ChainEntry, BlockVerificationError> {
-        let start = SystemTime::now();
+        let start = Instant::now();
 
         assert_eq!(block.header.prev_blockhash, prev.hash);
         assert_eq!(prev.hash, self.tip.hash);
@@ -543,12 +559,14 @@ impl Chain {
         self.notify_connect(&entry, block, &view);
 
         debug!(
-            "Block {} ({}) added to chain (size={} txs={} time={}ms)",
+            "Block {} ({}) added to chain (size={} txs={} time={}ms progress={:.2}%)",
             entry.hash,
             entry.height,
             block.get_size(),
             block.txdata.len(),
-            ms_since(&start)
+            ms_since(&start),
+            // TODO: Export to constant
+            (self.db.state.tx as f64 / 545_000_000.0) * 100.0
         );
 
         Ok(entry)
@@ -572,7 +590,7 @@ impl Chain {
 
         // verify duplicate txids
         if !state.has_bip34() || prev.height + 1 >= consensus::BIP34_IMPLIES_BIP30_LIMIT {
-            assert!(self.verify_duplicates(block, &prev), "bad-txns-BIP30");
+            self.verify_duplicates(block, &prev)?;
         }
 
         // do full verification
@@ -581,22 +599,30 @@ impl Chain {
         Ok((view, state))
     }
 
-    fn verify_duplicates(&self, block: &Block, prev: &ChainEntry) -> bool {
-        for tx in &block.txdata {
-            if !self.db.has_coins(tx) {
-                continue;
-            }
+    fn verify_duplicates(
+        &self,
+        block: &Block,
+        prev: &ChainEntry,
+    ) -> Result<(), TransactionVerificationError> {
+        use TransactionVerificationError::DuplicateTxid;
+        block
+            .txdata
+            .par_iter()
+            .map(|tx| {
+                if !self.db.has_coins(tx).unwrap() {
+                    return Ok(());
+                }
 
-            let height = prev.height + 1;
-            let hash = self.options.network.bip30.get(&height);
+                let height = prev.height + 1;
+                let hash = self.options.network.bip30.get(&height);
 
-            match hash {
-                Some(hash) if *hash != block.block_hash() => return false,
-                None => return false,
-                _ => (),
-            }
-        }
-        true
+                match hash {
+                    Some(hash) if *hash != block.block_hash() => Err(DuplicateTxid),
+                    None => Err(DuplicateTxid),
+                    _ => Ok(()),
+                }
+            })
+            .collect::<Result<_, _>>()
     }
 
     fn verify_inputs(
@@ -606,6 +632,7 @@ impl Chain {
         state: &DeploymentState,
     ) -> Result<CoinView, BlockVerificationError> {
         let mut view = CoinView::default();
+
         let height = prev.height + 1;
 
         let mut sigops = 0;
@@ -641,30 +668,37 @@ impl Chain {
             return Err(BlockVerificationError::BadCoinbaseAmount);
         }
 
-        // use rayon::prelude::*;
+        if self.options.verify_scripts {
+            use rayon::prelude::*;
 
-        // block
-        //     .txdata
-        //     .par_iter()
-        //     .skip(1) // skip coinbase as the miner can choose any script they want
-        //     .map(|tx| tx.verify_scripts(&view, &state.script_flags))
-        //     .collect::<Result<_, _>>()?;
+            block
+                .txdata
+                .par_iter()
+                .skip(1) // skip coinbase as the miner can choose any script they want
+                .map(|tx| tx.verify_scripts(&view, &state.script_flags))
+                .collect::<Result<_, _>>()?;
+        }
 
         Ok(view)
     }
 
     pub fn get_median_time(&self, prev: &ChainEntry) -> u32 {
-        let mut median = Vec::with_capacity(consensus::MEDIAN_TIMESPAN);
+        let mut median = [0u32; consensus::MEDIAN_TIMESPAN];
         let mut entry = Some(prev);
+
+        let mut end = 0;
 
         for _ in 0..consensus::MEDIAN_TIMESPAN {
             if let Some(chain_entry) = entry {
-                median.push(chain_entry.time);
+                median[end] = chain_entry.time;
                 entry = self.db.get_entry_by_hash(&chain_entry.prev_block);
+                end += 1;
             } else {
                 break;
             }
         }
+
+        let median = &mut median[..end];
 
         median.sort_unstable();
 
@@ -700,11 +734,13 @@ impl Chain {
 
             // Transactions must be finalized with
             // regards to nSequence and nLockTime.
-            for tx in &block.txdata {
+            let all_final = block.txdata.par_iter().all(|tx| {
                 // TODO: i32 -> Option
-                if !tx.is_final(height, time as i32) {
-                    return Err(TransactionVerificationError::NonFinal)?;
-                }
+                tx.is_final(height, time as i32)
+            });
+
+            if !all_final {
+                return Err(TransactionVerificationError::NonFinal)?;
             }
 
             // bip34 made coinbase txs unique by including the height
@@ -778,7 +814,7 @@ impl Chain {
         let pow_limit = self.options.network.pow_limit;
         let pow_limit_bits = self.options.network.pow_limit_bits;
 
-        let mut target = consensus::compact_to_target(prev.bits);
+        let mut target = BlockHeader::u256_from_compact_target(prev.bits);
 
         let mut actual_timespan = prev.time - first.time;
 
@@ -1091,8 +1127,8 @@ impl Chain {
     }
 
     fn notify_connect(&self, entry: &ChainEntry, block: &Block, view: &CoinView) {
-        for listener in &self.listeners {
-            listener.handle_connect(self, entry, block, view);
+        for listener in &self.connect_listeners {
+            listener(self, entry, block, view);
         }
     }
 }
@@ -1100,14 +1136,15 @@ impl Chain {
 pub struct ChainOptions {
     pub network: NetworkParams,
     pub path: PathBuf,
+    pub verify_scripts: bool,
 }
 
 impl ChainOptions {
-    pub fn new(network: Network, path: &str) -> Self {
-        use std::str::FromStr;
+    pub fn new(network: Network, path: PathBuf, verify_scripts: bool) -> Self {
         Self {
             network: NetworkParams::from_network(network),
-            path: PathBuf::from_str(path).unwrap(),
+            path,
+            verify_scripts,
         }
     }
 }

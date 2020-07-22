@@ -21,9 +21,9 @@ impl<T: Decodable + Encodable> DBValue for T {
     }
 
     fn encode(&self) -> Result<Vec<u8>, encode::Error> {
-        let mut encoder = Cursor::new(Vec::new());
+        let mut encoder = Vec::new();
         T::consensus_encode(self, &mut encoder)?;
-        Ok(encoder.into_inner())
+        Ok(encoder)
     }
 }
 
@@ -78,7 +78,7 @@ impl DBValue for ChainEntry {
     }
 
     fn encode(&self) -> Result<Vec<u8>, encode::Error> {
-        let mut encoder = Cursor::new(Vec::with_capacity(148));
+        let mut encoder = Vec::with_capacity(170);
         self.hash.consensus_encode(&mut encoder)?;
         self.version.consensus_encode(&mut encoder)?;
         self.prev_block.consensus_encode(&mut encoder)?;
@@ -89,7 +89,7 @@ impl DBValue for ChainEntry {
         self.height.consensus_encode(&mut encoder)?;
         self.chainwork.consensus_encode(&mut encoder)?;
         self.skip.consensus_encode(&mut encoder)?;
-        Ok(encoder.into_inner())
+        Ok(encoder)
     }
 }
 
@@ -119,7 +119,7 @@ impl DBValue for CoinEntry {
     fn encode(&self) -> Result<Vec<u8>, encode::Error> {
         // version + height + coinbase + output value + output script + spent
         let len = 4 + 4 + 1 + 8 + self.output.script_pubkey.len() + 1;
-        let mut encoder = Cursor::new(Vec::with_capacity(len));
+        let mut encoder = Vec::with_capacity(len);
         self.version.consensus_encode(&mut encoder)?;
         match self.height {
             Some(height) => height.consensus_encode(&mut encoder)?,
@@ -128,7 +128,7 @@ impl DBValue for CoinEntry {
         self.coinbase.consensus_encode(&mut encoder)?;
         self.output.consensus_encode(&mut encoder)?;
         self.spent.consensus_encode(&mut encoder)?;
-        Ok(encoder.into_inner())
+        Ok(encoder)
     }
 }
 
@@ -150,12 +150,12 @@ impl DBValue for ChainState {
 
     fn encode(&self) -> Result<Vec<u8>, encode::Error> {
         // length = tip + tx + coin + value
-        let mut encoder = Cursor::new(Vec::with_capacity(32 + 8 + 8 + 8));
+        let mut encoder = Vec::with_capacity(32 + 8 + 8 + 8);
         self.tip.consensus_encode(&mut encoder)?;
         self.tx.consensus_encode(&mut encoder)?;
         self.coin.consensus_encode(&mut encoder)?;
         self.value.consensus_encode(&mut encoder)?;
-        Ok(encoder.into_inner())
+        Ok(encoder)
     }
 }
 
@@ -173,11 +173,11 @@ impl DBValue for FileRecord {
     }
 
     fn encode(&self) -> Result<Vec<u8>, encode::Error> {
-        let mut encoder = Cursor::new(Vec::with_capacity(12));
+        let mut encoder = Vec::with_capacity(12);
         self.blocks.consensus_encode(&mut encoder)?;
         self.used.consensus_encode(&mut encoder)?;
         self.length.consensus_encode(&mut encoder)?;
-        Ok(encoder.into_inner())
+        Ok(encoder)
     }
 }
 
@@ -195,10 +195,10 @@ impl DBValue for BlockRecord {
     }
 
     fn encode(&self) -> Result<Vec<u8>, encode::Error> {
-        let mut encoder = Cursor::new(Vec::with_capacity(12));
+        let mut encoder = Vec::with_capacity(12);
         self.file.consensus_encode(&mut encoder)?;
         self.position.consensus_encode(&mut encoder)?;
         self.length.consensus_encode(&mut encoder)?;
-        Ok(encoder.into_inner())
+        Ok(encoder)
     }
 }
