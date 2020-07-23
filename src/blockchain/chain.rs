@@ -583,12 +583,6 @@ impl Chain {
         // non contextual verification;
         self.verify(&block, prev)?;
 
-        if self.is_historical(&prev) {
-            // skip full verification if checkpoint block
-            let view = self.update_inputs(block, &prev).unwrap();
-            return Ok((view, state));
-        }
-
         // verify duplicate txids
         if !state.has_bip34() || prev.height + 1 >= consensus::BIP34_IMPLIES_BIP30_LIMIT {
             self.verify_duplicates(block, &prev)?;
@@ -709,60 +703,49 @@ impl Chain {
     fn verify(&mut self, block: &Block, prev: ChainEntry) -> Result<(), BlockVerificationError> {
         assert_eq!(block.header.prev_blockhash, prev.hash);
 
-        // TODO: verify checkpoint
+        // non contextual block verification
+        block.check_body()?;
 
-        if self.is_historical(&prev) {
-            // TODO: Check for merkle tree malleability
-            if !block.check_merkle_root() {
-                Err(BlockVerificationError::BadMerkleRoot)
-            } else {
-                Ok(())
-            }
+        let height = prev.height + 1;
+
+        let state = self.get_deployments(block.header.time, prev);
+
+        let mtp = self.get_median_time(&prev);
+        let time = if state.has_mtp() {
+            mtp
         } else {
-            // non contextual block verification
-            block.check_body()?;
+            block.header.time
+        };
 
-            let height = prev.height + 1;
+        // Transactions must be finalized with
+        // regards to nSequence and nLockTime.
+        let all_final = block.txdata.par_iter().all(|tx| {
+            // TODO: i32 -> Option
+            tx.is_final(height, time as i32)
+        });
 
-            let state = self.get_deployments(block.header.time, prev);
-
-            let mtp = self.get_median_time(&prev);
-            let time = if state.has_mtp() {
-                mtp
-            } else {
-                block.header.time
-            };
-
-            // Transactions must be finalized with
-            // regards to nSequence and nLockTime.
-            let all_final = block.txdata.par_iter().all(|tx| {
-                // TODO: i32 -> Option
-                tx.is_final(height, time as i32)
-            });
-
-            if !all_final {
-                return Err(TransactionVerificationError::NonFinal)?;
-            }
-
-            // bip34 made coinbase txs unique by including the height
-            // of the block in the scriptsig
-            if state.has_bip34() {
-                block.check_coinbase_height(prev.height + 1)?;
-            }
-
-            // Check witness commitment hash.
-            // Returns true if block is not segwit so always check
-            if !block.check_witness_commitment() {
-                return Err(BlockVerificationError::BadWitnessCommitment);
-            }
-
-            // check block weight
-            if block.get_weight() > MAX_BLOCK_WEIGHT as usize {
-                return Err(BlockVerificationError::BadBlockWeight);
-            }
-
-            Ok(())
+        if !all_final {
+            return Err(TransactionVerificationError::NonFinal)?;
         }
+
+        // bip34 made coinbase txs unique by including the height
+        // of the block in the scriptsig
+        if state.has_bip34() {
+            block.check_coinbase_height(prev.height + 1)?;
+        }
+
+        // Check witness commitment hash.
+        // Returns true if block is not segwit so always check
+        if !block.check_witness_commitment() {
+            return Err(BlockVerificationError::BadWitnessCommitment);
+        }
+
+        // check block weight
+        if block.get_weight() > MAX_BLOCK_WEIGHT as usize {
+            return Err(BlockVerificationError::BadBlockWeight);
+        }
+
+        Ok(())
     }
 
     pub fn get_target(&self, time: u32, prev: Option<&ChainEntry>) -> u32 {
@@ -837,27 +820,6 @@ impl Chain {
         }
 
         BlockHeader::compact_target_from_u256(&target)
-    }
-
-    fn update_inputs(&self, block: &Block, prev: &ChainEntry) -> Result<CoinView, DBError> {
-        let mut view = CoinView::default();
-        let height = prev.height + 1;
-        let coinbase = &block.txdata[0];
-
-        view.add_tx(coinbase, height);
-
-        for tx in block.txdata.iter().skip(1) {
-            view.spend_inputs(&self.db, tx)
-                .expect("error in checkpoints");
-            view.add_tx(tx, height);
-        }
-
-        Ok(view)
-    }
-
-    fn is_historical(&self, _prev: &ChainEntry) -> bool {
-        // prev.height < self.options.network.last_checkpoint
-        false
     }
 
     pub fn compute_block_version(&mut self, prev: ChainEntry) -> u32 {
