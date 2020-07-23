@@ -3,7 +3,7 @@ use crate::coins::CoinView;
 use crate::protocol::{
     consensus::{self, LockFlags, ScriptFlags},
     BIP8Deployment, BIP8ThresholdState, BIP9Deployment, BIP9ThresholdState, Deployment,
-    NetworkParams, StartTime, ThresholdState, Timeout,
+    NetworkParams, StartTime, ThresholdState, Timeout, VERSIONBITS_TOP_BITS,
 };
 use crate::{
     error::{
@@ -860,6 +860,23 @@ impl Chain {
         false
     }
 
+    pub fn compute_block_version(&mut self, prev: ChainEntry) -> u32 {
+        let mut version = 0;
+
+        for deployment in self.options.network.deployments.clone().values() {
+            let state = self.get_state(prev, *deployment);
+
+            if state.is_locked_in() || state.is_started() {
+                version |= 1 << deployment.bit();
+            }
+        }
+
+        version |= VERSIONBITS_TOP_BITS;
+        version >>= 0;
+
+        version
+    }
+
     pub fn get_bip8_deployment_status(
         &mut self,
         mut prev: Option<ChainEntry>,
@@ -1092,6 +1109,17 @@ impl Chain {
         }
 
         state
+    }
+
+    pub fn get_state(&mut self, prev: ChainEntry, deployment: Deployment) -> ThresholdState {
+        match deployment {
+            Deployment::BIP8(deployment) => {
+                ThresholdState::BIP8(self.get_bip8_deployment_status(Some(prev), deployment))
+            }
+            Deployment::BIP9(deployment) => {
+                ThresholdState::BIP9(self.get_bip9_deployment_status(prev, deployment))
+            }
+        }
     }
 
     pub fn get_deployment_state(&mut self) -> DeploymentState {

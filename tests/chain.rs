@@ -26,30 +26,47 @@ fn init_logger() {
         .try_init();
 }
 
-fn bip8_activation(deployment: BIP8Deployment, expected_states: HashMap<u32, BIP8ThresholdState>) {
+fn bip8_activation(
+    deployment: BIP8Deployment,
+    expected_states: HashMap<u32, BIP8ThresholdState>,
+    signal: bool,
+) {
     let tmp_dir = TempDir::new().unwrap();
-    let mut chain = chain(tmp_dir.path().into());
+
+    let mut network_params = NetworkParams::from_network(bitcoin::Network::Regtest);
+    network_params
+        .deployments
+        .insert(deployment.name, Deployment::BIP8(deployment));
+
+    let mut chain = Chain::new(ChainOptions {
+        network: network_params,
+        path: tmp_dir.path().into(),
+        verify_scripts: true,
+    })
+    .unwrap();
+
     let miner = Miner::new();
 
     let num_blocks = chain.options.network.miner_confirmation_window + deployment.timeout_height;
 
-    chain
-        .options
-        .network
-        .deployments
-        .insert(deployment.name, Deployment::BIP8(deployment));
-
     // mine blocks until a difficulty adjustment period after the timeout height
     for _ in 0..num_blocks {
         let tip = chain.tip;
-        let block_template = miner.create_block(tip, None, &mut chain);
+        let mut block_template = miner.create_block(tip, None, &mut chain);
+
+        if !signal {
+            // reset version
+            block_template.version = 4;
+        }
+
         let block = Miner::mine_block(block_template, vec![]);
 
         assert!(chain.add(block).is_ok());
     }
 
     for (height, expected_status) in expected_states {
-        let prev = chain.db.get_entry_by_height(height - 1).copied();
+        let entry = *chain.db.get_entry_by_height(height).unwrap();
+        let prev = chain.db.get_entry_by_hash(&entry.prev_block).copied();
         assert_eq!(
             expected_status,
             chain.get_bip8_deployment_status(prev, deployment)
@@ -59,24 +76,52 @@ fn bip8_activation(deployment: BIP8Deployment, expected_states: HashMap<u32, BIP
 
 #[test]
 fn test_bip8_activation() {
+    // don't signal, don't lock in on timeout
     bip8_activation(
         BIP8Deployment::new("taproot", 2, 144, 576, false),
         hashmap! {
             0 => BIP8ThresholdState::Defined,
             144 => BIP8ThresholdState::Started,
             576 => BIP8ThresholdState::Failing,
-            576 + 144 => BIP8ThresholdState::Failed
+            720 => BIP8ThresholdState::Failed
         },
+        false,
     );
 
+    // signal, don't lock in on timeout
+    bip8_activation(
+        BIP8Deployment::new("taproot", 2, 144, 576, false),
+        hashmap! {
+            0 => BIP8ThresholdState::Defined,
+            144 => BIP8ThresholdState::Started,
+            288 => BIP8ThresholdState::LockedIn,
+            432 => BIP8ThresholdState::Active
+        },
+        true,
+    );
+
+    // don't signal, lock in on timeout
     bip8_activation(
         BIP8Deployment::new("taproot", 2, 144, 576, true),
         hashmap! {
             0 => BIP8ThresholdState::Defined,
             144 => BIP8ThresholdState::Started,
             576 => BIP8ThresholdState::LockedIn,
-            576 + 144 => BIP8ThresholdState::Active
+            720 => BIP8ThresholdState::Active,
         },
+        false,
+    );
+
+    // signal, lock in on timeout
+    bip8_activation(
+        BIP8Deployment::new("taproot", 2, 144, 576, true),
+        hashmap! {
+            0 => BIP8ThresholdState::Defined,
+            144 => BIP8ThresholdState::Started,
+            288 => BIP8ThresholdState::LockedIn,
+            432 => BIP8ThresholdState::Active,
+        },
+        true,
     );
 }
 

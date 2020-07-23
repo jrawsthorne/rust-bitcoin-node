@@ -26,10 +26,63 @@ pub enum Deployment {
     BIP9(BIP9Deployment),
 }
 
+impl Deployment {
+    pub fn bit(&self) -> u8 {
+        match self {
+            Deployment::BIP8(deployment) => deployment.bit,
+            Deployment::BIP9(deployment) => deployment.bit,
+        }
+    }
+}
+
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum ThresholdState {
     BIP8(BIP8ThresholdState),
     BIP9(BIP9ThresholdState),
+}
+
+impl ThresholdState {
+    pub fn is_active(&self) -> bool {
+        match self {
+            ThresholdState::BIP8(state) => *state == BIP8ThresholdState::Active,
+            ThresholdState::BIP9(state) => *state == BIP9ThresholdState::Active,
+        }
+    }
+
+    pub fn is_defined(&self) -> bool {
+        match self {
+            ThresholdState::BIP8(state) => *state == BIP8ThresholdState::Defined,
+            ThresholdState::BIP9(state) => *state == BIP9ThresholdState::Defined,
+        }
+    }
+
+    pub fn is_started(&self) -> bool {
+        match self {
+            ThresholdState::BIP8(state) => *state == BIP8ThresholdState::Started,
+            ThresholdState::BIP9(state) => *state == BIP9ThresholdState::Started,
+        }
+    }
+
+    pub fn is_locked_in(&self) -> bool {
+        match self {
+            ThresholdState::BIP8(state) => *state == BIP8ThresholdState::LockedIn,
+            ThresholdState::BIP9(state) => *state == BIP9ThresholdState::LockedIn,
+        }
+    }
+
+    pub fn is_failing(&self) -> bool {
+        match self {
+            ThresholdState::BIP8(state) => *state == BIP8ThresholdState::Failing,
+            ThresholdState::BIP9(state) => false,
+        }
+    }
+
+    pub fn is_failed(&self) -> bool {
+        match self {
+            ThresholdState::BIP8(state) => *state == BIP8ThresholdState::Failed,
+            ThresholdState::BIP9(state) => *state == BIP9ThresholdState::Failed,
+        }
+    }
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]

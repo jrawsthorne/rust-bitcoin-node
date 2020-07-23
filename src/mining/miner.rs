@@ -28,9 +28,9 @@ impl Miner {
         &self,
         tip: ChainEntry,
         address: Option<Address>,
-        chain: &Chain,
+        chain: &mut Chain,
     ) -> BlockTemplate {
-        let version = 4; // TODO: Should be determined by deployments state
+        let version = chain.compute_block_version(tip);
         let address = match address {
             Some(address) => address,
             None => self.get_address(),
