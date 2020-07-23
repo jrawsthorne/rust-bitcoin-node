@@ -1,7 +1,7 @@
 use crate::blockchain::{ChainEntry, ChainState};
 use crate::blockstore::{BlockRecord, FileRecord};
 use crate::coins::CoinEntry;
-use crate::protocol::ThresholdState;
+use crate::protocol::{BIP8ThresholdState, BIP9ThresholdState};
 use bitcoin::{
     consensus::{encode, Decodable, Encodable},
     util::uint::Uint256,
@@ -27,25 +27,50 @@ impl<T: Decodable + Encodable> DBValue for T {
     }
 }
 
-impl DBValue for ThresholdState {
+impl DBValue for BIP9ThresholdState {
     fn decode(bytes: &[u8]) -> Result<Self, encode::Error> {
         Ok(match bytes[0] {
-            0 => ThresholdState::Defined,
-            1 => ThresholdState::Started,
-            2 => ThresholdState::LockedIn,
-            3 => ThresholdState::Active,
-            4 => ThresholdState::Failed,
+            0 => BIP9ThresholdState::Defined,
+            1 => BIP9ThresholdState::Started,
+            2 => BIP9ThresholdState::LockedIn,
+            3 => BIP9ThresholdState::Active,
+            4 => BIP9ThresholdState::Failed,
             _ => unreachable!(),
         })
     }
 
     fn encode(&self) -> Result<Vec<u8>, encode::Error> {
         Ok(vec![match self {
-            ThresholdState::Defined => 0,
-            ThresholdState::Started => 1,
-            ThresholdState::LockedIn => 2,
-            ThresholdState::Active => 3,
-            ThresholdState::Failed => 4,
+            BIP9ThresholdState::Defined => 0,
+            BIP9ThresholdState::Started => 1,
+            BIP9ThresholdState::LockedIn => 2,
+            BIP9ThresholdState::Active => 3,
+            BIP9ThresholdState::Failed => 4,
+        }])
+    }
+}
+
+impl DBValue for BIP8ThresholdState {
+    fn decode(bytes: &[u8]) -> Result<Self, encode::Error> {
+        Ok(match bytes[0] {
+            0 => BIP8ThresholdState::Defined,
+            1 => BIP8ThresholdState::Started,
+            2 => BIP8ThresholdState::LockedIn,
+            3 => BIP8ThresholdState::Active,
+            4 => BIP8ThresholdState::Failing,
+            5 => BIP8ThresholdState::Failed,
+            _ => unreachable!(),
+        })
+    }
+
+    fn encode(&self) -> Result<Vec<u8>, encode::Error> {
+        Ok(vec![match self {
+            BIP8ThresholdState::Defined => 0,
+            BIP8ThresholdState::Started => 1,
+            BIP8ThresholdState::LockedIn => 2,
+            BIP8ThresholdState::Active => 3,
+            BIP8ThresholdState::Failing => 4,
+            BIP8ThresholdState::Failed => 5,
         }])
     }
 }

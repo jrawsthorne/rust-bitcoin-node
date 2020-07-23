@@ -30,7 +30,7 @@ impl Miner {
         address: Option<Address>,
         chain: &Chain,
     ) -> BlockTemplate {
-        let version = 0;
+        let version = 4; // TODO: Should be determined by deployments state
         let address = match address {
             Some(address) => address,
             None => self.get_address(),

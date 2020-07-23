@@ -1,5 +1,4 @@
 use super::NetworkParams;
-use bitcoin::util::uint::Uint256;
 
 /// 1 Bitcoin is 100 million satoshis
 pub const COIN: u64 = 100_000_000;

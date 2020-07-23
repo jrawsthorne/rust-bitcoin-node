@@ -1,4 +1,4 @@
-use super::{BIP9Deployment, StartTime, TimeData, Timeout};
+use super::{version_bits::Deployment, BIP9Deployment, StartTime, TimeData, Timeout};
 use bitcoin::{
     consensus::params::Params, network::constants::Network, util::uint::Uint256, BlockHash,
     BlockHeader,
@@ -36,7 +36,7 @@ pub struct NetworkParams {
     pub pow_target_spacing: u32,
     pub max_tip_age: usize,
     pub time: Arc<Mutex<TimeData>>,
-    pub deployments: HashMap<&'static str, BIP9Deployment>,
+    pub deployments: HashMap<&'static str, Deployment>,
     pub rule_change_activation_threshold: u32,
     pub miner_confirmation_window: u32,
     pub bip30: HashMap<u32, BlockHash>,
@@ -98,11 +98,11 @@ impl NetworkParams {
                 max_tip_age: 24 * 60 * 60,
                 time,
                 deployments: hashmap! {
-                    "segwit"    => BIP9Deployment::new("segwit", 1, StartTime::StartTime(1462060800), Timeout::Timeout(1493596800)),
-                    "taproot"   => BIP9Deployment::new("taproot", 2, StartTime::StartTime(1199145601), Timeout::Timeout(1230767999)),
+                    "segwit"    => Deployment::BIP9(BIP9Deployment::new("segwit", 1, StartTime::StartTime(1462060800), Timeout::Timeout(1493596800))),
+                    "taproot"   => Deployment::BIP9(BIP9Deployment::new("taproot", 2, StartTime::StartTime(1199145601), Timeout::Timeout(1230767999))),
                                 // March 1, 2020 - March 1, 2021
-                    "ctv"       => BIP9Deployment::new("ctv", 5, StartTime::StartTime(1583020800), Timeout::Timeout(1614556800)),
-                    "dummy"     => BIP9Deployment::new("dummy", 28, StartTime::StartTime(1199145601), Timeout::Timeout(1230767999)),
+                    "ctv"       => Deployment::BIP9(BIP9Deployment::new("ctv", 5, StartTime::StartTime(1583020800), Timeout::Timeout(1614556800))),
+                    "dummy"     => Deployment::BIP9(BIP9Deployment::new("dummy", 28, StartTime::StartTime(1199145601), Timeout::Timeout(1230767999))),
                 },
                 rule_change_activation_threshold,
                 miner_confirmation_window,
@@ -136,9 +136,9 @@ impl NetworkParams {
                 max_tip_age: 24 * 60 * 60,
                 time,
                 deployments: hashmap! {
-                    "taproot"   => BIP9Deployment::new("taproot", 2, StartTime::StartTime(1199145601), Timeout::Timeout(1230767999)),
-                    "ctv"       => BIP9Deployment::new("ctv", 5, StartTime::StartTime(1199145601), Timeout::Timeout(1230767999)),
-                    "dummy"     => BIP9Deployment::new("dummy", 28, StartTime::StartTime(1199145601), Timeout::Timeout(1230767999))
+                    "taproot"   => Deployment::BIP9(BIP9Deployment::new("taproot", 2, StartTime::StartTime(1199145601), Timeout::Timeout(1230767999))),
+                    "ctv"       => Deployment::BIP9(BIP9Deployment::new("ctv", 5, StartTime::StartTime(1199145601), Timeout::Timeout(1230767999))),
+                    "dummy"     => Deployment::BIP9(BIP9Deployment::new("dummy", 28, StartTime::StartTime(1199145601), Timeout::Timeout(1230767999)))
                 },
                 rule_change_activation_threshold,
                 miner_confirmation_window,
@@ -164,9 +164,9 @@ impl NetworkParams {
                 max_tip_age: 0xffffffff,
                 time,
                 deployments: hashmap! {
-                    "taproot"   => BIP9Deployment::new("taproot", 2, StartTime::AlwaysActive, Timeout::NoTimeout),
-                    "ctv"       => BIP9Deployment::new("ctv", 5, StartTime::AlwaysActive, Timeout::NoTimeout),
-                    "dummy"     => BIP9Deployment::new("dummy", 28, StartTime::StartTime(0), Timeout::NoTimeout)
+                    "taproot"   => Deployment::BIP9(BIP9Deployment::new("taproot", 2, StartTime::AlwaysActive, Timeout::NoTimeout)),
+                    "ctv"       => Deployment::BIP9(BIP9Deployment::new("ctv", 5, StartTime::AlwaysActive, Timeout::NoTimeout)),
+                    "dummy"     => Deployment::BIP9(BIP9Deployment::new("dummy", 28, StartTime::StartTime(0), Timeout::NoTimeout))
                 },
                 rule_change_activation_threshold,
                 miner_confirmation_window,
