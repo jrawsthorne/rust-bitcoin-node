@@ -1,5 +1,5 @@
 use super::ChainEntry;
-use crate::blockstore::{BlockRecord, BlockStore, BlockStoreOptions};
+use crate::blockstore::{BlockStore, BlockStoreOptions};
 use crate::coins::{CoinEntry, CoinView, UndoCoins};
 use crate::db::{Batch, DBKey, DBValue, Database, DiskDatabase, Iter, IterMode};
 use crate::error::DBError;

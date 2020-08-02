@@ -129,13 +129,14 @@ impl DBValue for CoinEntry {
         };
         let coinbase = bool::consensus_decode(&mut decoder)?;
         let output = TxOut::consensus_decode(&mut decoder)?;
-        let spent = bool::consensus_decode(&mut decoder)?;
+        // TODO: Don't store spent. If it still exists, it can't have been spent
+        let _spent = bool::consensus_decode(&mut decoder)?;
         Ok(CoinEntry {
             version,
             height,
             coinbase,
             output,
-            spent,
+            spent: false,
         })
     }
 
@@ -150,6 +151,7 @@ impl DBValue for CoinEntry {
         };
         self.coinbase.consensus_encode(&mut encoder)?;
         self.output.consensus_encode(&mut encoder)?;
+        // TODO: Don't store spent. If it still exists, it can't have been spent
         self.spent.consensus_encode(&mut encoder)?;
         Ok(encoder)
     }
