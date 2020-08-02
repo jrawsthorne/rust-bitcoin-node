@@ -155,45 +155,67 @@ fn should_mine_competing_chains() {
 
     let miner = Miner::new();
 
+    for _ in 0..10 {
+        let tip1 = chain.tip.clone();
+        let tip2 = chain.tip.clone();
+
+        let block1 = miner.create_block(tip1, None, &mut chain);
+        let block2 = miner.create_block(tip2, None, &mut chain);
+
+        let block1 = Miner::mine_block(block1, vec![]);
+        let block2 = Miner::mine_block(block2, vec![]);
+
+        let hash1 = block1.block_hash();
+        let hash2 = block2.block_hash();
+
+        chain.add(block1).unwrap();
+        chain.add(block2).unwrap();
+
+        assert_eq!(chain.tip.hash, hash1);
+
+        assert!(chain.db.get_entry_by_hash(&hash1).is_some());
+        let tip2 = *chain.db.get_entry_by_hash(&hash2).unwrap();
+
+        assert!(!chain.db.is_main_chain(&tip2));
+    }
+}
+
+#[test]
+fn should_handle_reorgs() {
+    init_logger();
+    let tmp_dir = TempDir::new().unwrap();
+    let mut chain = chain(tmp_dir.path().into());
+    let miner = Miner::new();
+
+    // 1 block reorg
+
     let tip1 = chain.tip.clone();
     let tip2 = chain.tip.clone();
 
-    let block1 = miner.create_block(tip1, None, &mut chain);
-    let block2 = miner.create_block(tip2, None, &mut chain);
+    let template1 = miner.create_block(tip1, None, &mut chain);
+    let template2 = miner.create_block(tip2, None, &mut chain);
 
-    let block1 = Miner::mine_block(block1, vec![]);
-    let block2 = Miner::mine_block(block2, vec![]);
+    let block1 = Miner::mine_block(template1, vec![]);
+    let block2 = Miner::mine_block(template2, vec![]);
 
     let hash1 = block1.block_hash();
     let hash2 = block2.block_hash();
 
     chain.add(block1).unwrap();
-    chain.add(block2).unwrap();
+    let tip3 = chain.add(block2).unwrap();
 
     assert_eq!(chain.tip.hash, hash1);
 
-    chain.db.get_entry_by_hash(&hash1).unwrap();
-    let tip2 = *chain.db.get_entry_by_hash(&hash2).unwrap();
+    // build on top of block 2
+    let template3 = miner.create_block(tip3, None, &mut chain);
+    let block3 = Miner::mine_block(template3, vec![]);
+    let hash3 = block3.block_hash();
 
-    assert!(!chain.db.is_main_chain(&tip2));
+    // disconnect block 1, connect block 2 and 3
+    chain.add(block3).unwrap();
 
-    assert_eq!(chain.height, 1); // genesis + one main chain block
-    assert_eq!(chain.db.state.value, 1 * BASE_REWARD); // one spendable coinbase output
-    assert_eq!(chain.db.state.coin, 1);
-    assert_eq!(chain.db.state.tx, 2);
+    assert_eq!(chain.tip.hash, hash3);
+    assert!(chain.db.is_main_hash(&hash2));
 
-    let entry = *chain.db.get_entry_by_hash(&tip2.hash).unwrap();
-    assert_eq!(chain.height, entry.height);
-
-    // let block = Miner::mine_block(template);
+    // massive reorg
 }
-
-// #[tokio::test]
-// async fn should_handle_a_reorg() {
-//     init_logger();
-//     let tmp_dir = TempDir::new().unwrap();
-//     let mut chain = chain(tmp_dir.path().into()).await;
-//     let miner = Miner::new();
-
-//     let tip1
-// }

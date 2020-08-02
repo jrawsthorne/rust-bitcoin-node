@@ -5,19 +5,23 @@ pub use db::Key;
 pub use records::{BlockRecord, FileRecord, RecordType};
 
 use crate::{
-    db::{Batch, Database, DiskDatabase},
+    coins::UndoCoins,
+    db::{Batch, DBValue, Database, DiskDatabase, IterMode},
     error::DBError,
 };
 use bitcoin::{
-    consensus::{Decodable, Encodable},
+    consensus::{deserialize, Decodable, Encodable},
     hashes::Hash,
     BlockHash, Network,
 };
+use db::COL_BLOCK_RECORD;
 
 use log::{debug, info};
 use regex::Regex;
 use std::fs::{self, File, OpenOptions};
-use std::{ffi::OsStr, io::prelude::*, io::Cursor, io::SeekFrom, path::PathBuf};
+use std::{
+    collections::HashSet, ffi::OsStr, io::prelude::*, io::Cursor, io::SeekFrom, path::PathBuf,
+};
 
 pub struct BlockStore {
     db: DiskDatabase<Key>,
@@ -30,6 +34,20 @@ impl BlockStore {
             db: DiskDatabase::new(options.index_location.clone(), db::columns()),
             options,
         }
+    }
+
+    pub fn downloaded_set(&self) -> HashSet<BlockHash> {
+        let mut downloaded = HashSet::new();
+        for (hash, _) in self
+            .db
+            .iter_cf::<BlockRecord>(COL_BLOCK_RECORD, IterMode::Start)
+            .unwrap()
+        {
+            let hash = &hash[4..];
+            let hash = deserialize(&hash).unwrap();
+            downloaded.insert(hash);
+        }
+        downloaded
     }
 
     pub fn check(&self, record_type: RecordType) -> Result<(bool, Vec<u32>), DBError> {
@@ -119,9 +137,16 @@ impl BlockStore {
                             continue;
                         }
 
-                        let mut hash_bytes = vec![0; 80];
+                        let mut hash_bytes = [0; 80];
                         reader.read_exact(&mut hash_bytes).expect("read err");
                         let hash = BlockHash::hash(&hash_bytes);
+                        (position, hash)
+                    }
+                    RecordType::Undo => {
+                        let mut hash_bytes = [0; 32];
+                        reader.read_exact(&mut hash_bytes)?;
+                        let position = reader.position();
+                        let hash = BlockHash::from_slice(&hash_bytes).expect("malformed hash");
                         (position, hash)
                     }
                 };
@@ -153,7 +178,8 @@ impl BlockStore {
     }
 
     fn index(&mut self) -> Result<(), DBError> {
-        self._index(RecordType::Block)
+        self._index(RecordType::Block)?;
+        self._index(RecordType::Undo)
     }
 
     fn ensure(&self) -> Result<(), DBError> {
@@ -217,6 +243,10 @@ impl BlockStore {
         self._write(RecordType::Block, hash, data)
     }
 
+    pub fn write_undo(&mut self, hash: BlockHash, undo: &UndoCoins) -> Result<(), DBError> {
+        self._write(RecordType::Undo, hash, &undo.encode()?)
+    }
+
     pub fn _write(
         &mut self,
         record_type: RecordType,
@@ -226,18 +256,23 @@ impl BlockStore {
         if self.db.has(Key::BlockRecord(record_type, hash))? {
             return Ok(());
         }
-        let magic_length = 8;
+        let mut magic_length = 8;
+
+        if let RecordType::Undo = record_type {
+            magic_length += 32;
+        }
 
         let block_length = data.len();
         let length = block_length + magic_length;
 
-        let mut magic = [0u8; 8];
+        let mut magic = Vec::with_capacity(8);
 
-        self.options
-            .network
-            .magic()
-            .consensus_encode(&mut magic[0..4])?;
-        (block_length as u32).consensus_encode(&mut magic[4..])?;
+        self.options.network.magic().consensus_encode(&mut magic)?;
+        (block_length as u32).consensus_encode(&mut magic)?;
+
+        if let RecordType::Undo = record_type {
+            hash.consensus_encode(&mut magic)?;
+        }
 
         let (fileno, mut filerecord, filepath) = self.allocate(record_type, length)?;
 
@@ -277,6 +312,10 @@ impl BlockStore {
         length: Option<u32>,
     ) -> Result<Option<Vec<u8>>, DBError> {
         self._read(RecordType::Block, hash, offset, length)
+    }
+
+    pub fn read_undo(&self, hash: BlockHash) -> Result<Option<Vec<u8>>, DBError> {
+        self._read(RecordType::Undo, hash, 0, None)
     }
 
     fn _read(

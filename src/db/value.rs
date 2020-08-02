@@ -1,22 +1,20 @@
 use crate::blockchain::{ChainEntry, ChainState};
 use crate::blockstore::{BlockRecord, FileRecord};
-use crate::coins::CoinEntry;
+use crate::coins::{CoinEntry, UndoCoins};
 use crate::protocol::{BIP8ThresholdState, BIP9ThresholdState};
 use bitcoin::{
     consensus::{encode, Decodable, Encodable},
     util::uint::Uint256,
     BlockHash, TxMerkleNode, TxOut,
 };
-use std::io::Cursor;
 
 pub trait DBValue: Sized {
-    fn decode(bytes: &[u8]) -> Result<Self, encode::Error>;
+    fn decode<R: std::io::Read>(decoder: R) -> Result<Self, encode::Error>;
     fn encode(&self) -> Result<Vec<u8>, encode::Error>;
 }
 
 impl<T: Decodable + Encodable> DBValue for T {
-    fn decode(bytes: &[u8]) -> Result<T, encode::Error> {
-        let decoder = Cursor::new(bytes);
+    fn decode<R: std::io::Read>(decoder: R) -> Result<T, encode::Error> {
         Ok(T::consensus_decode(decoder)?)
     }
 
@@ -28,8 +26,9 @@ impl<T: Decodable + Encodable> DBValue for T {
 }
 
 impl DBValue for BIP9ThresholdState {
-    fn decode(bytes: &[u8]) -> Result<Self, encode::Error> {
-        Ok(match bytes[0] {
+    fn decode<R: std::io::Read>(decoder: R) -> Result<Self, encode::Error> {
+        let flag = u8::consensus_decode(decoder)?;
+        Ok(match flag {
             0 => BIP9ThresholdState::Defined,
             1 => BIP9ThresholdState::Started,
             2 => BIP9ThresholdState::LockedIn,
@@ -51,8 +50,9 @@ impl DBValue for BIP9ThresholdState {
 }
 
 impl DBValue for BIP8ThresholdState {
-    fn decode(bytes: &[u8]) -> Result<Self, encode::Error> {
-        Ok(match bytes[0] {
+    fn decode<R: std::io::Read>(decoder: R) -> Result<Self, encode::Error> {
+        let flag = u8::consensus_decode(decoder)?;
+        Ok(match flag {
             0 => BIP8ThresholdState::Defined,
             1 => BIP8ThresholdState::Started,
             2 => BIP8ThresholdState::LockedIn,
@@ -76,8 +76,7 @@ impl DBValue for BIP8ThresholdState {
 }
 
 impl DBValue for ChainEntry {
-    fn decode(bytes: &[u8]) -> Result<Self, encode::Error> {
-        let mut decoder = Cursor::new(bytes);
+    fn decode<R: std::io::Read>(mut decoder: R) -> Result<Self, encode::Error> {
         let hash = BlockHash::consensus_decode(&mut decoder)?;
         let version = u32::consensus_decode(&mut decoder)?;
         let prev_block = BlockHash::consensus_decode(&mut decoder)?;
@@ -122,8 +121,7 @@ pub static MAX_HEIGHT: u32 = u32::max_value();
 
 // TODO: Compress
 impl DBValue for CoinEntry {
-    fn decode(bytes: &[u8]) -> Result<Self, encode::Error> {
-        let mut decoder = Cursor::new(bytes);
+    fn decode<R: std::io::Read>(mut decoder: R) -> Result<Self, encode::Error> {
         let version = u32::consensus_decode(&mut decoder)?;
         let height = match u32::consensus_decode(&mut decoder)? {
             height if height == MAX_HEIGHT => None,
@@ -157,9 +155,37 @@ impl DBValue for CoinEntry {
     }
 }
 
+impl DBValue for UndoCoins {
+    fn decode<R: std::io::Read>(mut decoder: R) -> Result<Self, encode::Error> {
+        let count = u32::consensus_decode(&mut decoder)?;
+
+        let mut items = Vec::with_capacity(count as usize);
+
+        for _ in 0..count {
+            items.push(CoinEntry::decode(&mut decoder)?);
+        }
+
+        Ok(UndoCoins { items })
+    }
+
+    fn encode(&self) -> Result<Vec<u8>, encode::Error> {
+        let count = self.items.len();
+        let mut encoder = Vec::new();
+
+        (count as u32).consensus_encode(&mut encoder)?;
+
+        // TODO encode with io write
+
+        for coin in &self.items {
+            encoder.extend(coin.encode()?);
+        }
+
+        Ok(encoder)
+    }
+}
+
 impl DBValue for ChainState {
-    fn decode(bytes: &[u8]) -> Result<Self, encode::Error> {
-        let mut decoder = Cursor::new(bytes);
+    fn decode<R: std::io::Read>(mut decoder: R) -> Result<Self, encode::Error> {
         let tip = BlockHash::consensus_decode(&mut decoder)?;
         let tx = u64::consensus_decode(&mut decoder)?;
         let coin = u64::consensus_decode(&mut decoder)?;
@@ -185,8 +211,7 @@ impl DBValue for ChainState {
 }
 
 impl DBValue for FileRecord {
-    fn decode(bytes: &[u8]) -> Result<Self, encode::Error> {
-        let mut decoder = Cursor::new(bytes);
+    fn decode<R: std::io::Read>(mut decoder: R) -> Result<Self, encode::Error> {
         let blocks = u32::consensus_decode(&mut decoder)?;
         let used = u32::consensus_decode(&mut decoder)?;
         let length = u32::consensus_decode(&mut decoder)?;
@@ -207,8 +232,7 @@ impl DBValue for FileRecord {
 }
 
 impl DBValue for BlockRecord {
-    fn decode(bytes: &[u8]) -> Result<Self, encode::Error> {
-        let mut decoder = Cursor::new(bytes);
+    fn decode<R: std::io::Read>(mut decoder: R) -> Result<Self, encode::Error> {
         let file = u32::consensus_decode(&mut decoder)?;
         let position = u32::consensus_decode(&mut decoder)?;
         let length = u32::consensus_decode(&mut decoder)?;

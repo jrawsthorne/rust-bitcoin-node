@@ -7,7 +7,7 @@ use bitcoin::{
     consensus::{deserialize, Decodable, Encodable},
     Block, Transaction, Txid, VarInt,
 };
-use std::{io::Cursor, path::Path};
+use std::path::Path;
 
 pub struct TxIndexer {
     db: DiskDatabase<Txid>,
@@ -16,9 +16,7 @@ pub struct TxIndexer {
 pub struct TxMap(u32, u32, u32);
 
 impl DBValue for TxMap {
-    fn decode(bytes: &[u8]) -> Result<Self, bitcoin::consensus::encode::Error> {
-        let mut decoder = Cursor::new(bytes);
-
+    fn decode<R: std::io::Read>(mut decoder: R) -> Result<Self, bitcoin::consensus::encode::Error> {
         let height = u32::consensus_decode(&mut decoder)?;
         let offset = u32::consensus_decode(&mut decoder)?;
         let length = u32::consensus_decode(&mut decoder)?;

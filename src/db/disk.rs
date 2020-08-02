@@ -22,7 +22,7 @@ impl<'a, V: DBValue> Iterator for Iter<'a, V> {
     type Item = (Box<[u8]>, V);
     fn next(&mut self) -> Option<Self::Item> {
         if let Some(next) = self.iter.next() {
-            let value = V::decode(&next.1);
+            let value = V::decode(&next.1[..]);
             if let Ok(value) = value {
                 return Some((next.0, value));
             }
@@ -123,7 +123,7 @@ impl<K: DBKey> Database<K> for DiskDatabase<K> {
         let col = self.col(key.col())?;
         let raw = self.db.get_pinned_cf(col, key.encode()?)?;
         Ok(match raw {
-            Some(raw) => Some(V::decode(&raw)?),
+            Some(raw) => Some(V::decode(&raw[..])?),
             None => None,
         })
     }

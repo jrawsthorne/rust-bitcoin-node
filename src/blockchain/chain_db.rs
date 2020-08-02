@@ -1,7 +1,7 @@
 use super::ChainEntry;
-use crate::blockstore::{BlockStore, BlockStoreOptions};
-use crate::coins::{CoinEntry, CoinView};
-use crate::db::{Batch, DBKey, Database, DiskDatabase, Iter, IterMode};
+use crate::blockstore::{BlockRecord, BlockStore, BlockStoreOptions};
+use crate::coins::{CoinEntry, CoinView, UndoCoins};
+use crate::db::{Batch, DBKey, DBValue, Database, DiskDatabase, Iter, IterMode};
 use crate::error::DBError;
 use crate::protocol::{
     BIP8ThresholdState, BIP9ThresholdState, Deployment, NetworkParams, ThresholdState,
@@ -25,8 +25,7 @@ pub struct ChainEntryCache {
 enum ChainEntryCacheOperation {
     InsertHash(ChainEntry),
     InsertHeight(ChainEntry),
-    // RemoveHash(BlockHash),
-    // RemoveHeight(u32),
+    RemoveHeight(u32),
 }
 
 impl ChainEntryCache {
@@ -55,15 +54,10 @@ impl ChainEntryCache {
         self.batch.push(ChainEntryCacheOperation::InsertHash(entry));
     }
 
-    // fn remove_height_batch(&mut self, entry: &ChainEntry) {
-    //     self.batch
-    //         .push(ChainEntryCacheOperation::RemoveHeight(entry.height));
-    // }
-
-    // fn remove_hash_batch(&mut self, entry: &ChainEntry) {
-    //     self.batch
-    //         .push(ChainEntryCacheOperation::RemoveHash(entry.hash));
-    // }
+    fn remove_height_batch(&mut self, entry: &ChainEntry) {
+        self.batch
+            .push(ChainEntryCacheOperation::RemoveHeight(entry.height));
+    }
 
     fn write_batch(&mut self) {
         use ChainEntryCacheOperation::*;
@@ -75,8 +69,9 @@ impl ChainEntryCache {
                 InsertHeight(entry) => {
                     self.height.insert(entry.height, entry.hash);
                 }
-                // RemoveHeight(height) => self.height.remove(&height),
-                // RemoveHash(hash) => self.hash.remove(&hash),
+                RemoveHeight(height) => {
+                    self.height.remove(&height);
+                }
             };
         }
     }
@@ -97,6 +92,7 @@ pub struct ChainDB {
     pub most_work: Option<ChainEntry>,
     pub blocks: BlockStore,
     pub version_bits_cache: VersionBitsCache,
+    pub downloaded: HashSet<BlockHash>,
 }
 
 pub struct ChainDBOptions {
@@ -108,12 +104,17 @@ impl ChainDB {
         let db = DiskDatabase::new(options.path.clone(), key::columns());
         let entry_cache = ChainEntryCache::new(&db);
 
-        Self {
-            blocks: BlockStore::new(BlockStoreOptions::new(network_params.network, {
-                let mut path = options.path;
-                path.push("blocks");
-                path
-            })),
+        let blocks = BlockStore::new(BlockStoreOptions::new(network_params.network, {
+            let mut path = options.path;
+            path.push("blocks");
+            path
+        }));
+
+        info!("Populating downloaded blocks cache");
+        let downloaded = blocks.downloaded_set();
+
+        let db = Self {
+            blocks,
             version_bits_cache: VersionBitsCache::new(&network_params),
             network_params,
             db,
@@ -122,7 +123,10 @@ impl ChainDB {
             pending: Default::default(),
             invalid: Default::default(),
             most_work: Default::default(),
-        }
+            downloaded,
+        };
+
+        db
     }
 
     pub fn open(&mut self) -> Result<(), DBError> {
@@ -214,7 +218,9 @@ impl ChainDB {
         let hash = block.block_hash();
         let mut b = Vec::with_capacity(block.get_size());
         block.consensus_encode(&mut b).unwrap();
-        self.blocks.write(hash, &b)
+        self.blocks.write(hash, &b)?;
+        self.downloaded.insert(hash);
+        Ok(())
     }
 
     pub fn get_block(&self, hash: BlockHash) -> Result<Option<Block>, DBError> {
@@ -311,7 +317,85 @@ impl ChainDB {
         Ok(())
     }
 
-    pub fn disconnect(&mut self) {}
+    pub fn disconnect(&mut self, entry: ChainEntry, block: &Block) -> Result<CoinView, DBError> {
+        let mut batch = self.start();
+
+        let mut disconnect = || {
+            batch.remove(Key::NextHash(entry.prev_block));
+
+            batch.remove(Key::Hash(entry.height));
+            self.entry_cache.remove_height_batch(&entry);
+
+            self.save_version_bits_cache(&mut batch)?;
+
+            let view = self.disconnect_block(&mut batch, entry, block)?;
+
+            let chain_state = self.pending.as_mut().unwrap().commit(entry.prev_block);
+            batch.insert(Key::ChainState, chain_state)?;
+
+            Ok(view)
+        };
+
+        let view = match disconnect() {
+            Ok(view) => view,
+            Err(err) => {
+                self.drop();
+                return Err(err);
+            }
+        };
+
+        self.commit(batch)?;
+
+        Ok(view)
+    }
+
+    fn disconnect_block(
+        &mut self,
+        batch: &mut Batch<Key>,
+        entry: ChainEntry,
+        block: &Block,
+    ) -> Result<CoinView, DBError> {
+        let mut view = CoinView::default();
+
+        let hash = entry.hash;
+        let mut undo = self.get_undo_coins(hash)?;
+
+        let pending = self.pending.as_mut().unwrap();
+        pending.disconnect(block);
+
+        for (i, tx) in block.txdata.iter().enumerate().rev() {
+            if i > 0 {
+                for input in tx.input.iter().rev() {
+                    undo.apply(&mut view, input.previous_output);
+                    pending.add(view.get_output(&input.previous_output).expect("just added"));
+                }
+            }
+
+            view.remove_tx(tx, entry.height);
+
+            for output in tx.output.iter().rev() {
+                if output.script_pubkey.is_provably_unspendable() {
+                    continue;
+                }
+
+                pending.spend(&output);
+            }
+        }
+
+        assert!(undo.is_empty());
+
+        self.save_view(batch, &view)?;
+
+        Ok(view)
+    }
+
+    fn get_undo_coins(&self, hash: BlockHash) -> Result<UndoCoins, DBError> {
+        Ok(self
+            .blocks
+            .read_undo(hash)?
+            .map(|bytes| UndoCoins::decode(&bytes[..]).unwrap())
+            .unwrap_or_default())
+    }
 
     fn commit(&mut self, batch: Batch<Key>) -> Result<(), DBError> {
         assert!(self.pending.is_some());
@@ -381,8 +465,8 @@ impl ChainDB {
         entries
     }
 
-    pub fn has_block(&self, hash: BlockHash) -> Result<bool, DBError> {
-        self.blocks.has(hash)
+    pub fn has_block(&self, hash: BlockHash) -> bool {
+        self.downloaded.contains(&hash)
     }
 
     pub fn read_coin(&self, prevout: OutPoint) -> Result<Option<CoinEntry>, DBError> {
@@ -409,7 +493,7 @@ impl ChainDB {
         assert!(self.pending.is_none());
 
         let batch = Batch::new();
-        self.pending.replace(self.state);
+        self.pending.replace(self.state.clone());
 
         self.entry_cache.clear_batch();
 
@@ -449,6 +533,10 @@ impl ChainDB {
         }
 
         self.save_view(batch, view)?;
+
+        if !view.undo.is_empty() {
+            self.blocks.write_undo(entry.hash, &view.undo)?;
+        }
 
         Ok(())
     }
@@ -627,7 +715,7 @@ pub fn get_skip_height(height: u32) -> u32 {
 }
 
 /// Current state of the main chain
-#[derive(Default, Clone, Debug, Copy)]
+#[derive(Default, Clone, Debug)]
 pub struct ChainState {
     /// Hash of the tip of the chain
     pub tip: BlockHash,
@@ -643,6 +731,10 @@ pub struct ChainState {
 impl ChainState {
     pub fn connect(&mut self, block: &Block) {
         self.tx += block.txdata.len() as u64;
+    }
+
+    pub fn disconnect(&mut self, block: &Block) {
+        self.tx -= block.txdata.len() as u64;
     }
 
     pub fn add(&mut self, coin: &TxOut) {

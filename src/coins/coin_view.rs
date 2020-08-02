@@ -1,4 +1,4 @@
-use super::CoinEntry;
+use super::{CoinEntry, UndoCoins};
 use crate::blockchain::ChainDB;
 use crate::error::{DBError, TransactionVerificationError};
 use bitcoin::{OutPoint, Transaction, TxOut};
@@ -9,11 +9,16 @@ use std::collections::{hash_map::Entry, HashMap};
 pub struct CoinView {
     /// A map of transaction ID to coins
     pub map: HashMap<OutPoint, CoinEntry>,
+    pub undo: UndoCoins,
 }
 
 impl CoinView {
     /// Add a new transaction to the view
     pub fn add_tx(&mut self, tx: &Transaction, height: u32) {
+        self.index_tx(tx, height, false);
+    }
+
+    fn index_tx(&mut self, tx: &Transaction, height: u32, spent: bool) {
         let txid = tx.txid();
 
         for (index, output) in tx.output.iter().enumerate() {
@@ -25,9 +30,19 @@ impl CoinView {
                     vout: index as u32,
                     txid,
                 },
-                CoinEntry::from_tx(tx, index as u32, height),
+                CoinEntry {
+                    version: tx.version,
+                    height: Some(height),
+                    coinbase: tx.is_coin_base(),
+                    output: output.clone(),
+                    spent,
+                },
             );
         }
+    }
+
+    pub fn remove_tx(&mut self, tx: &Transaction, height: u32) {
+        self.index_tx(tx, height, true);
     }
 
     pub fn get_output(&self, prevout: &OutPoint) -> Option<&TxOut> {
@@ -64,6 +79,8 @@ impl CoinView {
             match coin {
                 Some(coin) if !coin.spent => {
                     coin.spent = true;
+                    let undo_coin = coin.clone();
+                    self.undo.push(undo_coin);
                 }
                 _ => return Err(TransactionVerificationError::InputsMissingOrSpent), // should have already been checked,
             }

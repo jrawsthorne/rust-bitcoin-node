@@ -63,18 +63,21 @@ impl BlockRecord {
 #[derive(Debug, Clone, Copy)]
 pub enum RecordType {
     Block,
+    Undo,
 }
 
 impl RecordType {
     pub fn prefix(&self) -> String {
         match self {
             RecordType::Block => String::from("blk"),
+            RecordType::Undo => String::from("blu"),
         }
     }
 
     pub fn as_u32(&self) -> u32 {
         match self {
             RecordType::Block => 0,
+            RecordType::Undo => 1,
         }
     }
 }

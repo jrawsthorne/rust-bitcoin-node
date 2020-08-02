@@ -10,7 +10,7 @@ use crate::{
         BlockHeaderVerificationError, BlockVerificationError, DBError, TransactionVerificationError,
     },
     primitives::{BlockExt, TransactionExt},
-    util::ms_since,
+    util::{ms_since, now},
 };
 use bitcoin::{
     blockdata::constants::{
@@ -137,9 +137,8 @@ impl Chain {
         self.state = state;
     }
 
-    fn is_block_ready(&self, hash: BlockHash) -> Result<bool, DBError> {
-        let has = !self.db.has_invalid(&hash) && self.db.has_block(hash)?;
-        Ok(has)
+    fn is_block_ready(&self, hash: BlockHash) -> bool {
+        !self.db.has_invalid(&hash) && self.db.has_block(hash)
     }
 
     /// Add a block to the chain and return a chain entry representing it if it was added successfully
@@ -187,7 +186,7 @@ impl Chain {
                 .expect("block only added if we have previous header")
         };
 
-        assert!(!self.db.has_block(hash).unwrap());
+        assert!(!self.db.has_block(hash));
 
         if let Err(err) = self.verify(block, prev) {
             // check if mutated, don't add to invalid set if mutated
@@ -287,7 +286,7 @@ impl Chain {
             let mut max_work = Uint256::from_u64(0).unwrap();
             let mut max_path = VecDeque::new();
 
-            if !chain.is_block_ready(entry.hash)? {
+            if !chain.is_block_ready(entry.hash) {
                 return Ok(max_path);
             }
 
@@ -322,20 +321,20 @@ impl Chain {
         mut prev: ChainEntry,
         block: Option<Block>,
     ) -> Result<(), BlockVerificationError> {
-        // let tip = self.tip;
+        let tip = self.tip;
 
         assert!(entry.prev_block == prev.hash);
 
         let mut queue = VecDeque::new();
 
-        if self.is_block_ready(entry.hash).unwrap() {
+        if self.is_block_ready(entry.hash) {
             queue.push_back((entry, prev, block));
 
             let mut head;
             let mut head_prev = prev;
 
             while !self.db.is_main_chain(&head_prev) {
-                if self.is_block_ready(head_prev.hash).unwrap() {
+                if self.is_block_ready(head_prev.hash) {
                     head = head_prev;
                     head_prev = *self.db.get_entry_by_hash(&head.prev_block).unwrap();
                     queue.push_front((head, head_prev, None));
@@ -366,7 +365,15 @@ impl Chain {
             return Ok(());
         }
 
+        let reorg = self.tip.hash != queue[0].0.prev_block;
+
+        while self.tip.hash != queue[0].0.prev_block {
+            self.disconnect(self.tip).unwrap();
+        }
+
         // let common = self.tip;
+
+        // TODO: Handle errors
 
         for (entry, prev, block) in queue {
             let block = if let Some(block) = block {
@@ -376,6 +383,24 @@ impl Chain {
             };
             self.connect(&block, entry, prev)?;
         }
+
+        Ok(())
+    }
+
+    fn disconnect(&mut self, entry: ChainEntry) -> Result<(), DBError> {
+        let block = self.db.get_block(entry.hash)?.expect("block not found");
+
+        let prev = *self
+            .db
+            .get_entry_by_hash(&entry.prev_block)
+            .expect("prev not found");
+
+        let view = self.db.disconnect(entry, &block)?;
+
+        self.tip = prev;
+        self.height = prev.height;
+
+        // TODO: Notify listeners
 
         Ok(())
     }
@@ -399,15 +424,7 @@ impl Chain {
             return Err(BlockHeaderVerificationError::TimeTooOld);
         }
 
-        let adjusted_time = self
-            .options
-            .network
-            .time
-            .lock()
-            .unwrap()
-            .get_adjusted_time();
-
-        if (header.time as u64) >= adjusted_time + consensus::MAX_FUTURE_BLOCK_TIME as u64 {
+        if (header.time as u64) >= now() + consensus::MAX_FUTURE_BLOCK_TIME as u64 {
             return Err(BlockHeaderVerificationError::TimeTooNew);
         }
 
@@ -1242,15 +1259,7 @@ impl Chain {
             return tx.is_final(height, time as i32);
         }
 
-        tx.is_final(
-            height,
-            self.options
-                .network
-                .time
-                .lock()
-                .unwrap()
-                .get_adjusted_time() as i32,
-        )
+        tx.is_final(height, now() as i32)
     }
 
     fn notify_connect(&self, entry: &ChainEntry, block: &Block, view: &CoinView) {
