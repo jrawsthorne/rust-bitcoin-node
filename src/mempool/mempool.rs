@@ -53,6 +53,8 @@ pub enum MempoolError {
     DoubleSpend,
     #[error("orphan")]
     Orphan,
+    #[error("replace by fee")]
+    ReplaceByFee,
     #[error(transparent)]
     DBError(#[from] DBError),
 }
@@ -116,6 +118,9 @@ impl MemPool {
         }
 
         if self.is_double_spend(&tx) {
+            if tx.signals_replacement() {
+                return Err(MempoolError::ReplaceByFee);
+            }
             return Err(MempoolError::DoubleSpend);
         }
 

@@ -26,6 +26,7 @@ pub trait TransactionExt {
         flags: &ScriptFlags,
     ) -> Result<(), TransactionVerificationError>;
     fn stripped_size(&self) -> usize;
+    fn signals_replacement(&self) -> bool;
 }
 
 impl TransactionExt for Transaction {
@@ -294,5 +295,12 @@ impl TransactionExt for Transaction {
         4;
 
         non_input_size + input_weight
+    }
+
+    /// Signals RBF
+    fn signals_replacement(&self) -> bool {
+        self.input
+            .iter()
+            .any(|input| input.sequence < u32::max_value() - 1)
     }
 }
