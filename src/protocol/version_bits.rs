@@ -73,7 +73,7 @@ impl ThresholdState {
     pub fn is_failing(&self) -> bool {
         match self {
             ThresholdState::BIP8(state) => *state == BIP8ThresholdState::Failing,
-            ThresholdState::BIP9(state) => false,
+            ThresholdState::BIP9(_state) => false,
         }
     }
 

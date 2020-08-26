@@ -1,5 +1,5 @@
 use crate::{
-    blockchain::Chain,
+    blockchain::{Chain, ChainListener},
     db::{Batch, DBKey, DBValue, Database, DiskDatabase},
     ChainEntry,
 };
@@ -7,10 +7,33 @@ use bitcoin::{
     consensus::{deserialize, Decodable, Encodable},
     Block, Transaction, Txid, VarInt,
 };
-use std::path::Path;
+use parking_lot::RwLock;
+use std::{path::Path, sync::Arc};
 
 pub struct TxIndexer {
     db: DiskDatabase<Txid>,
+}
+
+impl ChainListener for Arc<RwLock<TxIndexer>> {
+    fn handle_connect(
+        &self,
+        _chain: &Chain,
+        entry: &ChainEntry,
+        block: &Block,
+        _view: &crate::CoinView,
+    ) {
+        self.write().index_block(entry, block);
+    }
+
+    fn handle_disconnect(
+        &self,
+        _chain: &Chain,
+        _entry: &ChainEntry,
+        block: &Block,
+        _view: &crate::CoinView,
+    ) {
+        self.write().unindex_block(block);
+    }
 }
 
 pub struct TxMap(u32, u32, u32);

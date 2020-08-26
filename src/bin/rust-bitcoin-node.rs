@@ -28,7 +28,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let full_node = FullNode::new(Config {
         path: path.into(),
-        network: Network::Bitcoin,
+        network,
         mempool: false,
         addr_index: false,
         filter_index: false,

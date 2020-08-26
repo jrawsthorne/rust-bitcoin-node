@@ -1,4 +1,5 @@
 use crate::{
+    blockchain::ChainListener,
     db::{Batch, DBKey, Database, DiskDatabase},
     ChainEntry, CoinView,
 };
@@ -10,6 +11,7 @@ use bitcoin::{
     Block, BlockHash, FilterHash, Network, OutPoint,
 };
 use log::info;
+use parking_lot::RwLock;
 use std::{path::Path, sync::Arc};
 
 pub const COL_FILTER: &str = "F";
@@ -57,6 +59,18 @@ pub struct FilterIndexer {
     db: Arc<DiskDatabase<Key>>,
 }
 
+impl ChainListener for Arc<RwLock<FilterIndexer>> {
+    fn handle_connect(
+        &self,
+        _chain: &crate::blockchain::Chain,
+        entry: &ChainEntry,
+        block: &Block,
+        view: &CoinView,
+    ) {
+        self.write().block_connected(entry, block, view);
+    }
+}
+
 impl FilterIndexer {
     pub fn new(network: Network, path: impl AsRef<Path>) -> Self {
         let mut filters = Self {
@@ -71,7 +85,7 @@ impl FilterIndexer {
             info!("adding genesis to filter index");
             let genesis = genesis_block(network);
             let entry = ChainEntry::from_block(&genesis, None);
-            filters.handle_connect(&entry, &genesis, &CoinView::default());
+            filters.block_connected(&entry, &genesis, &CoinView::default());
         }
 
         filters
@@ -121,7 +135,7 @@ impl FilterIndexer {
 }
 
 impl FilterIndexer {
-    pub fn handle_connect(&mut self, entry: &ChainEntry, block: &Block, view: &CoinView) {
+    pub fn block_connected(&mut self, entry: &ChainEntry, block: &Block, view: &CoinView) {
         let scripts_for_coin = |outpoint: &OutPoint| {
             view.map
                 .get(outpoint)

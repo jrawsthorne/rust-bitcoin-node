@@ -24,7 +24,25 @@ use rayon::prelude::*;
 use std::collections::VecDeque;
 use std::{path::PathBuf, time::Instant};
 
-type OnConnect = Box<dyn Fn(&Chain, &ChainEntry, &Block, &CoinView) + Send + Sync>;
+pub trait ChainListener: Send + Sync {
+    fn handle_connect(
+        &self,
+        _chain: &Chain,
+        _entry: &ChainEntry,
+        _block: &Block,
+        _view: &CoinView,
+    ) {
+    }
+
+    fn handle_disconnect(
+        &self,
+        _chain: &Chain,
+        _entry: &ChainEntry,
+        _block: &bitcoin::Block,
+        _view: &CoinView,
+    ) {
+    }
+}
 
 pub struct Chain {
     pub db: ChainDB,
@@ -32,7 +50,7 @@ pub struct Chain {
     pub height: u32,
     pub options: ChainOptions,
     pub state: DeploymentState,
-    connect_listeners: Vec<OnConnect>,
+    listeners: Vec<Box<dyn ChainListener>>,
 }
 
 impl Chain {
@@ -48,7 +66,7 @@ impl Chain {
             height: 0,
             options,
             state: DeploymentState::default(),
-            connect_listeners: vec![],
+            listeners: vec![],
         };
 
         chain.db.open()?;
@@ -94,11 +112,8 @@ impl Chain {
         hashes.into()
     }
 
-    pub fn on_connect(
-        &mut self,
-        func: impl Fn(&Chain, &ChainEntry, &Block, &CoinView) + Send + Sync + 'static,
-    ) {
-        self.connect_listeners.push(Box::new(func));
+    pub fn add_listener(&mut self, listener: impl ChainListener + 'static) {
+        self.listeners.push(Box::new(listener));
     }
 
     fn set_deployment_state(&mut self, state: DeploymentState) {
@@ -321,7 +336,7 @@ impl Chain {
         mut prev: ChainEntry,
         block: Option<Block>,
     ) -> Result<(), BlockVerificationError> {
-        let tip = self.tip;
+        let _tip = self.tip;
 
         assert!(entry.prev_block == prev.hash);
 
@@ -365,7 +380,7 @@ impl Chain {
             return Ok(());
         }
 
-        let reorg = self.tip.hash != queue[0].0.prev_block;
+        let _reorg = self.tip.hash != queue[0].0.prev_block;
 
         while self.tip.hash != queue[0].0.prev_block {
             self.disconnect(self.tip).unwrap();
@@ -400,7 +415,7 @@ impl Chain {
         self.tip = prev;
         self.height = prev.height;
 
-        // TODO: Notify listeners
+        self.notify_disconnect(&entry, &block, &view);
 
         Ok(())
     }
@@ -1263,8 +1278,14 @@ impl Chain {
     }
 
     fn notify_connect(&self, entry: &ChainEntry, block: &Block, view: &CoinView) {
-        for listener in &self.connect_listeners {
-            listener(self, entry, block, view);
+        for listener in &self.listeners {
+            listener.handle_connect(self, entry, block, view);
+        }
+    }
+
+    fn notify_disconnect(&self, entry: &ChainEntry, block: &Block, view: &CoinView) {
+        for listener in &self.listeners {
+            listener.handle_disconnect(self, entry, block, view);
         }
     }
 }

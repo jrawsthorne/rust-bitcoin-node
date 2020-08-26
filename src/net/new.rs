@@ -356,7 +356,7 @@ impl Peer {
         }
     }
 
-    pub fn queue_inv(&self, inv: Vec<Inventory>) {}
+    pub fn queue_inv(&self, _inv: Vec<Inventory>) {}
 
     pub fn send_compact_block(&self, block: &Block) {
         use bitcoin::secp256k1::rand::random;
@@ -422,7 +422,7 @@ impl Peer {
         state.prefer_headers = true;
     }
 
-    pub fn handle_pong(&self, nonce: u64) {}
+    pub fn handle_pong(&self, _nonce: u64) {}
 
     pub fn handle_filter_load(&self, filter: BloomFilter) {
         if !filter.is_within_size_constraints() {
@@ -832,7 +832,8 @@ impl Pool {
         state.tx_map.remove(&txid);
 
         if let Some(mempool) = &self.mempool {
-            if let Err(err) = mempool.write().add_tx(&self.chain.read(), tx) {
+            let chain = self.chain.read();
+            if let Err(err) = mempool.write().add_tx(&chain, tx) {
                 warn!("{} couldn't be added to mempool: {}", txid, err);
             }
         }
@@ -877,8 +878,7 @@ impl Pool {
                     .get_next_path(chain.most_work(), height, 16)
                     .into_iter()
                     .filter_map(|e| {
-                        if state.verifying.contains(&e.hash.as_hash())
-                            || chain.db.has_block(e.hash).unwrap()
+                        if state.verifying.contains(&e.hash.as_hash()) || chain.db.has_block(e.hash)
                         {
                             None
                         } else {

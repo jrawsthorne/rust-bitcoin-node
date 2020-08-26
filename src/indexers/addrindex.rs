@@ -1,4 +1,5 @@
 use crate::{
+    blockchain::ChainListener,
     db::{Batch, DBKey, Database, DiskDatabase, IterDirection},
     ChainEntry, CoinView,
 };
@@ -8,11 +9,34 @@ use bitcoin::{
     util::address::Payload,
     Address, AddressType, Block, Network, Txid, VarInt,
 };
-use std::{collections::HashSet, convert::TryInto, io::Cursor, path::Path};
+use parking_lot::RwLock;
+use std::{collections::HashSet, convert::TryInto, io::Cursor, path::Path, sync::Arc};
 
 pub struct AddrIndexer {
     db: DiskDatabase<Key>,
     network: Network,
+}
+
+impl ChainListener for Arc<RwLock<AddrIndexer>> {
+    fn handle_connect(
+        &self,
+        _chain: &crate::blockchain::Chain,
+        entry: &ChainEntry,
+        block: &Block,
+        view: &CoinView,
+    ) {
+        self.write().index_block(entry, block, view);
+    }
+
+    fn handle_disconnect(
+        &self,
+        _chain: &crate::blockchain::Chain,
+        entry: &ChainEntry,
+        block: &Block,
+        view: &CoinView,
+    ) {
+        self.write().unindex_block(entry, block, view);
+    }
 }
 
 pub enum Key {

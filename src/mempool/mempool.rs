@@ -1,4 +1,4 @@
-use crate::blockchain::Chain;
+use crate::blockchain::{Chain, ChainListener};
 use crate::coins::CoinView;
 use crate::{
     error::{DBError, TransactionVerificationError},
@@ -10,7 +10,8 @@ use crate::{
 use bitcoin::Transaction;
 use bitcoin::{OutPoint, Txid};
 use log::{debug, error, info};
-use std::{collections::HashMap, time::Instant};
+use parking_lot::RwLock;
+use std::{collections::HashMap, sync::Arc, time::Instant};
 use thiserror::Error;
 
 pub struct MemPoolEntry {
@@ -65,6 +66,28 @@ pub struct MemPool {
     pub transactions: HashMap<Txid, MemPoolEntry>,
     /// map of outpoint to the txid of the transaction that spent that output
     pub spents: HashMap<OutPoint, Txid>,
+}
+
+impl ChainListener for Arc<RwLock<MemPool>> {
+    fn handle_connect(
+        &self,
+        _chain: &Chain,
+        entry: &ChainEntry,
+        block: &bitcoin::Block,
+        _view: &CoinView,
+    ) {
+        self.write().add_block(&block.txdata, entry.height);
+    }
+
+    fn handle_disconnect(
+        &self,
+        chain: &Chain,
+        entry: &ChainEntry,
+        block: &bitcoin::Block,
+        _view: &CoinView,
+    ) {
+        self.write().remove_block(chain, entry, &block.txdata);
+    }
 }
 
 impl MemPool {
