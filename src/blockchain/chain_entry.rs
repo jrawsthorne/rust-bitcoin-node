@@ -6,7 +6,7 @@ use bitcoin::{util::uint::Uint256, Block, BlockHash, BlockHeader, TxMerkleNode};
 #[derive(Debug, Clone, Default, Copy, Eq, PartialEq)]
 pub struct ChainEntry {
     pub hash: BlockHash,
-    pub version: u32,
+    pub version: i32,
     pub prev_block: BlockHash,
     pub merkle_root: TxMerkleNode,
     pub time: u32,

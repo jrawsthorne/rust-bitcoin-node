@@ -4,7 +4,7 @@ use bitcoin::blockdata::transaction::{Transaction, TxOut};
 #[derive(Debug, Clone)]
 pub struct CoinEntry {
     /// The transaction version
-    pub version: u32,
+    pub version: i32,
     /// The height of the block this output was created in
     pub height: Option<u32>,
     /// Whether this coin originated from a coinbase transaction.

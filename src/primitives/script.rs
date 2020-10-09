@@ -45,9 +45,9 @@ impl ScriptExt for Script {
         }
         let mut keys = 0;
 
-        for instruction in self.iter(false).skip(1).take(n as usize) {
+        for instruction in self.instructions().skip(1).take(n as usize) {
             match instruction {
-                Instruction::PushBytes(bytes) if bytes.len() == 33 || bytes.len() == 65 => {
+                Ok(Instruction::PushBytes(bytes)) if bytes.len() == 33 || bytes.len() == 65 => {
                     keys += 1;
                 }
                 _ => return false,
@@ -75,29 +75,31 @@ impl ScriptExt for Script {
         let mut n = 0;
         let mut last_opcode = OP_RETURN_255.into_u8();
 
-        for op in self.iter(false) {
+        for op in self.instructions() {
             match op {
-                Instruction::Error(_) => break,
-                Instruction::Op(op) => {
-                    match op {
-                        OP_CHECKSIG | OP_CHECKSIGVERIFY => {
-                            n += 1;
-                        }
-                        OP_CHECKMULTISIG | OP_CHECKMULTISIGVERIFY => {
-                            if accurate
-                                && last_opcode >= OP_PUSHNUM_1.into_u8()
-                                && last_opcode <= OP_PUSHNUM_16.into_u8()
-                            {
-                                n += last_opcode as usize - 0x50;
-                            } else {
-                                n += MAX_PUBKEYS_PER_MULTISIG;
+                Err(_) => break,
+                Ok(instruction) => match instruction {
+                    Instruction::Op(op) => {
+                        match op {
+                            OP_CHECKSIG | OP_CHECKSIGVERIFY => {
+                                n += 1;
                             }
+                            OP_CHECKMULTISIG | OP_CHECKMULTISIGVERIFY => {
+                                if accurate
+                                    && last_opcode >= OP_PUSHNUM_1.into_u8()
+                                    && last_opcode <= OP_PUSHNUM_16.into_u8()
+                                {
+                                    n += last_opcode as usize - 0x50;
+                                } else {
+                                    n += MAX_PUBKEYS_PER_MULTISIG;
+                                }
+                            }
+                            _ => {}
                         }
-                        _ => {}
+                        last_opcode = op.into_u8();
                     }
-                    last_opcode = op.into_u8();
-                }
-                Instruction::PushBytes(_) => {}
+                    Instruction::PushBytes(_) => {}
+                },
             }
         }
 
@@ -125,15 +127,17 @@ impl ScriptExt for Script {
 
         let mut data = None;
 
-        for op in self.iter(false) {
+        for op in self.instructions() {
             match op {
-                Instruction::Error(_) => return None,
-                Instruction::Op(op) => {
-                    if op.into_u8() > opcodes::all::OP_PUSHNUM_16.into_u8() {
-                        return None;
+                Ok(instruction) => match instruction {
+                    Instruction::Op(op) => {
+                        if op.into_u8() > opcodes::all::OP_PUSHNUM_16.into_u8() {
+                            return None;
+                        }
                     }
-                }
-                Instruction::PushBytes(bytes) => data = Some(bytes),
+                    Instruction::PushBytes(bytes) => data = Some(bytes),
+                },
+                Err(_) => return None,
             }
         }
 

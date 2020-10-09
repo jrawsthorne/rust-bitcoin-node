@@ -7,7 +7,7 @@ pub struct BlockTemplate {
     network: NetworkParams,
     fees: u64,
     pub prev_blockhash: BlockHash,
-    pub version: u32,
+    pub version: i32,
     pub time: u32,
     pub target: u32,
 }
@@ -17,7 +17,7 @@ impl BlockTemplate {
         height: u32,
         address: Address,
         prev_blockhash: BlockHash,
-        version: u32,
+        version: i32,
         time: u32,
         target: u32,
     ) -> Self {

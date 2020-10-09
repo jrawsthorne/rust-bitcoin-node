@@ -1,5 +1,6 @@
-pub const VERSIONBITS_TOP_BITS: u32 = 0x20000000;
-pub const VERSIONBITS_TOP_MASK: u32 = 0xE0000000;
+pub const VERSIONBITS_TOP_BITS: i32 = 0x20000000;
+pub const VERSIONBITS_TOP_MASK: i32 = -536870912;
+
 pub const VERSIONBITS_NUM_BITS: usize = 29;
 
 // BIP 9 defines a finite-state-machine to deploy a softfork in multiple stages.

@@ -78,7 +78,7 @@ impl DBValue for BIP8ThresholdState {
 impl DBValue for ChainEntry {
     fn decode<R: std::io::Read>(mut decoder: R) -> Result<Self, encode::Error> {
         let hash = BlockHash::consensus_decode(&mut decoder)?;
-        let version = u32::consensus_decode(&mut decoder)?;
+        let version = i32::consensus_decode(&mut decoder)?;
         let prev_block = BlockHash::consensus_decode(&mut decoder)?;
         let merkle_root = TxMerkleNode::consensus_decode(&mut decoder)?;
         let time = u32::consensus_decode(&mut decoder)?;
@@ -122,7 +122,7 @@ pub static MAX_HEIGHT: u32 = u32::max_value();
 // TODO: Compress
 impl DBValue for CoinEntry {
     fn decode<R: std::io::Read>(mut decoder: R) -> Result<Self, encode::Error> {
-        let version = u32::consensus_decode(&mut decoder)?;
+        let version = i32::consensus_decode(&mut decoder)?;
         let height = match u32::consensus_decode(&mut decoder)? {
             height if height == MAX_HEIGHT => None,
             height => Some(height),

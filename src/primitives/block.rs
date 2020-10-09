@@ -3,11 +3,7 @@ use crate::{
     error::{BlockHeaderVerificationError, BlockVerificationError},
     protocol::consensus::*,
 };
-use bitcoin::{
-    blockdata::constants::*,
-    blockdata::script::{read_scriptint, Instruction},
-    Block, VarInt,
-};
+use bitcoin::{blockdata::constants::*, Block, VarInt};
 
 pub trait BlockExt {
     fn get_claimed(&self) -> u64;
@@ -72,34 +68,14 @@ impl BlockExt for Block {
     }
 
     fn check_coinbase_height(&self, height: u32) -> Result<(), BlockVerificationError> {
-        use BlockVerificationError::BadCoinbaseHeight;
-
-        if self.header.version < 2 {
-            return Err(BadCoinbaseHeight);
-        }
-
-        if self.txdata.is_empty() {
-            return Err(BadCoinbaseHeight);
-        }
-
-        let coinbase = &self.txdata[0];
-
-        if coinbase.input.is_empty() {
-            return Err(BadCoinbaseHeight);
-        }
-
-        let coinbase_script = &coinbase.input[0].script_sig;
-
-        match coinbase_script.iter(false).next() {
-            Some(Instruction::PushBytes(bytes)) => {
-                let actual_height = read_scriptint(bytes).map_err(|_| BadCoinbaseHeight)?;
-                if actual_height != height as i64 {
-                    Err(BadCoinbaseHeight)
-                } else {
-                    Ok(())
-                }
-            }
-            _ => Err(BadCoinbaseHeight),
+        if self
+            .bip34_block_height()
+            .map_err(|_| BlockVerificationError::BadCoinbaseHeight)?
+            != height as u64
+        {
+            Err(BlockVerificationError::BadCoinbaseHeight)
+        } else {
+            Ok(())
         }
     }
 

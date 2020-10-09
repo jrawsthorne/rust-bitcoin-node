@@ -854,7 +854,7 @@ impl Chain {
         BlockHeader::compact_target_from_u256(&target)
     }
 
-    pub fn compute_block_version(&mut self, prev: ChainEntry) -> u32 {
+    pub fn compute_block_version(&mut self, prev: ChainEntry) -> i32 {
         let mut version = 0;
 
         for deployment in self.options.network.deployments.clone().values() {

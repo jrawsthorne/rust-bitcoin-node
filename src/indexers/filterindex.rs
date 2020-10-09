@@ -139,7 +139,7 @@ impl FilterIndexer {
         let scripts_for_coin = |outpoint: &OutPoint| {
             view.map
                 .get(outpoint)
-                .map(|coin| &coin.output.script_pubkey)
+                .map(|coin| &coin.output.script_pubkey) // TODO: Create PR for rust-bitcoin to return reference
                 .ok_or_else(|| bip158::Error::UtxoMissing(*outpoint))
         };
 

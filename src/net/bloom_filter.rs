@@ -150,9 +150,9 @@ impl BloomFilter {
             found = true;
         }
         for (index, output) in tx.output.iter().enumerate() {
-            for instruction in output.script_pubkey.iter(false) {
+            for instruction in output.script_pubkey.instructions() {
                 match instruction {
-                    Instruction::PushBytes(data) => {
+                    Ok(Instruction::PushBytes(data)) => {
                         if !data.is_empty() && self.contains(data) {
                             found = true;
                             match self.flags {
@@ -187,9 +187,9 @@ impl BloomFilter {
             if self.contains_outpoint(&input.previous_output) {
                 return true;
             }
-            for instruction in input.script_sig.iter(false) {
+            for instruction in input.script_sig.instructions() {
                 match instruction {
-                    Instruction::PushBytes(data) => {
+                    Ok(Instruction::PushBytes(data)) => {
                         if !data.is_empty() && self.contains(data) {
                             return true;
                         }
