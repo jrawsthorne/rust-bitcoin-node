@@ -8,7 +8,7 @@ use bitcoin::{
     consensus::Encodable,
     hashes::Hash,
     util::bip158::{self, BlockFilter},
-    Block, BlockHash, FilterHash, Network, OutPoint,
+    Block, BlockHash, FilterHash, FilterHeader, Network, OutPoint,
 };
 use log::info;
 use parking_lot::RwLock;
@@ -91,7 +91,7 @@ impl FilterIndexer {
         filters
     }
 
-    pub fn filter_header_by_height(&self, height: u32) -> Option<FilterHash> {
+    pub fn filter_header_by_height(&self, height: u32) -> Option<FilterHeader> {
         self.db.get(Key::FilterHeader(height)).unwrap()
     }
 
@@ -104,7 +104,7 @@ impl FilterIndexer {
         self.db.get(Key::FilterHash(height)).unwrap()
     }
 
-    pub fn filter_header_by_hash(&self, hash: BlockHash) -> Option<FilterHash> {
+    pub fn filter_header_by_hash(&self, hash: BlockHash) -> Option<FilterHeader> {
         let height = self.db.get(Key::Height(hash)).unwrap()?;
         self.filter_header_by_height(height)
     }
@@ -139,7 +139,7 @@ impl FilterIndexer {
         let scripts_for_coin = |outpoint: &OutPoint| {
             view.map
                 .get(outpoint)
-                .map(|coin| &coin.output.script_pubkey) // TODO: Create PR for rust-bitcoin to return reference
+                .map(|coin| coin.output.script_pubkey.clone()) // TODO: Create PR for rust-bitcoin to return reference
                 .ok_or_else(|| bip158::Error::UtxoMissing(*outpoint))
         };
 
@@ -152,7 +152,7 @@ impl FilterIndexer {
             self.filter_header_by_hash(entry.prev_block).unwrap()
         };
 
-        let filter_header = filter.filter_id(&prev_filter_header);
+        let filter_header = filter.filter_header(&prev_filter_header);
 
         let mut batch = Batch::new();
 

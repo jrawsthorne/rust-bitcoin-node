@@ -144,7 +144,7 @@ impl NetworkParams {
                 miner_confirmation_window,
                 bip30: Default::default(),
             },
-            Network::Regtest => Self {
+            Network::Regtest | Network::Signet => Self {
                 network,
                 last_checkpoint: 0,
                 halving_interval: 210_000,

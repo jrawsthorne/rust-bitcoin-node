@@ -785,6 +785,7 @@ impl Pool {
                 Inventory::Transaction(_) => {}
                 Inventory::FilteredBlock(_) => {}
                 Inventory::Block(_) => {}
+                Inventory::WTx(_) => {}
             }
         }
 
@@ -1163,6 +1164,7 @@ impl Pool {
                     | Inventory::WitnessBlock(hash)
                     | Inventory::WitnessFilteredBlock(hash) => hash.as_hash(),
                     Inventory::Error => continue,
+                    Inventory::WTx(_) => todo!("wtxid transaction requesting"),
                 };
                 warn!(
                     "Peer sent notfound for unrequested item: {} ({}).",
@@ -1198,7 +1200,7 @@ impl Pool {
 
         let filter_hashes = filter_index.filter_hashes_by_block_hashes(&hashes);
 
-        let prev_filter_header = if start_height > 0 {
+        let previous_filter_header = if start_height > 0 {
             let hash = chain.db.get_entry_by_height(start_height - 1).unwrap().hash;
             filter_index.filter_header_by_hash(hash).unwrap()
         } else {
@@ -1207,7 +1209,7 @@ impl Pool {
 
         peer.send(NetworkMessage::CFHeaders(CFHeaders {
             filter_hashes,
-            previous_filter: prev_filter_header,
+            previous_filter_header,
             stop_hash,
             filter_type,
         }));
@@ -1361,6 +1363,10 @@ impl Pool {
             NetworkMessage::FilterClear => {}
             NetworkMessage::Alert(_) => {}
             NetworkMessage::Reject(_) => {}
+
+            NetworkMessage::WtxidRelay => {}
+            NetworkMessage::AddrV2(_) => {}
+            NetworkMessage::SendAddrV2 => {}
         }
     }
 }
@@ -1376,6 +1382,7 @@ fn resolve_item(state: &mut PoolState, peer_state: &mut State, item: &Inventory)
         | Inventory::CompactBlock(hash)
         | Inventory::WitnessBlock(hash)
         | Inventory::WitnessFilteredBlock(hash) => resolve_block(state, peer_state, hash),
+        Inventory::WTx(_) => todo!("wtxid transaction fetching"),
     }
 }
 
