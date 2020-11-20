@@ -275,7 +275,7 @@ mod test {
         let pubkey = key.public_key(&Secp256k1::new());
 
         let mut hash_engine = hash160::Hash::engine();
-        pubkey.write_into(&mut hash_engine);
+        pubkey.write_into(&mut hash_engine).unwrap();
         let hash = hash160::Hash::from_engine(hash_engine);
 
         let mut filter = BloomFilter::new(2, 0.001, 0, BloomFlags::All);

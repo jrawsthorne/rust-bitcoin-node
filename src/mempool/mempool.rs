@@ -147,7 +147,7 @@ impl MemPool {
             return Err(MempoolError::DoubleSpend);
         }
 
-        let view = self.get_coin_view(chain, &tx);
+        let view = self.get_coin_view(chain, &tx)?;
 
         if tx
             .input
@@ -198,7 +198,7 @@ impl MemPool {
         Ok(())
     }
 
-    fn get_coin_view(&self, chain: &Chain, tx: &Transaction) -> CoinView {
+    fn get_coin_view(&self, chain: &Chain, tx: &Transaction) -> Result<CoinView, MempoolError> {
         let mut view = CoinView::default();
 
         for input in &tx.input {
@@ -221,14 +221,14 @@ impl MemPool {
                     }
                 }
                 None => {
-                    if let Some(coin) = chain.db.read_coin(input.previous_output).unwrap() {
+                    if let Some(coin) = chain.db.read_coin(input.previous_output)? {
                         view.map.insert(input.previous_output, coin);
                     }
                 }
             }
         }
 
-        view
+        Ok(view)
     }
 
     pub fn has_coin(&self, outpoint: &OutPoint) -> bool {

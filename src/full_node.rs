@@ -2,7 +2,8 @@ use crate::{
     blockchain::{Chain, ChainOptions},
     indexers::{AddrIndexer, FilterIndexer, TxIndexer},
     mempool::MemPool,
-    net::Pool,
+    net::PeerManager,
+    protocol::NetworkParams,
 };
 use bitcoin::Network;
 use parking_lot::RwLock;
@@ -14,7 +15,7 @@ pub struct FullNode {
     pub tx_index: Option<Arc<RwLock<TxIndexer>>>,
     pub addr_index: Option<Arc<RwLock<AddrIndexer>>>,
     pub filter_index: Option<Arc<RwLock<FilterIndexer>>>,
-    pub pool: Arc<Pool>,
+    pub pool: Arc<PeerManager>,
 }
 
 pub struct Config {
@@ -84,7 +85,14 @@ impl FullNode {
 
         let chain = Arc::new(RwLock::new(chain));
 
-        let pool = Pool::new(Arc::clone(&chain), mempool.clone(), filter_index.clone());
+        let network = NetworkParams::from_network(config.network);
+
+        let pool = PeerManager::new(
+            Arc::clone(&chain),
+            mempool.clone(),
+            filter_index.clone(),
+            network,
+        );
 
         Self {
             chain,
