@@ -128,6 +128,18 @@ impl ConnectionWriter {
     }
 }
 
+#[derive(Debug, Eq, PartialEq)]
+pub enum TxRelay {
+    Txid,
+    Wtxid,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub enum AddrRelay {
+    V1,
+    V2,
+}
+
 pub struct State {
     pub ack: bool,
     pub version: Option<u32>,
@@ -150,8 +162,8 @@ pub struct State {
     pub compact_blocks: HashMap<BlockHash, CompactBlock>,
     pub sent_get_addr: bool,
     pub disconnect: bool,
-    pub wants_addrv2: bool,
-    pub wtxid_relay: bool,
+    pub tx_relay: TxRelay,
+    pub addr_relay: AddrRelay,
     pub ping_nonce_sent: Option<u64>,
 }
 
@@ -209,8 +221,8 @@ impl Peer {
                 compact_blocks: HashMap::new(),
                 sent_get_addr: false,
                 disconnect: false,
-                wants_addrv2: false,
-                wtxid_relay: false,
+                addr_relay: AddrRelay::V1,
+                tx_relay: TxRelay::Txid,
                 ping_nonce_sent: None,
             }),
             sender,
@@ -555,7 +567,7 @@ impl Peer {
                     bail!("wtxidrelay must be sent between version and verack");
                 } else {
                     info!("peer wants transactions relayed by wtxid ({})", self.addr);
-                    state.wtxid_relay = true;
+                    state.tx_relay = TxRelay::Wtxid;
                 }
             }
             _ => {
@@ -578,7 +590,7 @@ impl Peer {
                     }
                     NetworkMessage::SendAddrV2 => {
                         info!("peer wants addrv2 ({})", self.addr);
-                        self.state.write().wants_addrv2 = true;
+                        self.state.write().addr_relay = AddrRelay::V2;
                     }
                     _ => {}
                 }

@@ -27,6 +27,7 @@ use bitcoin::{
 
 use log::{debug, info, trace, warn};
 use parking_lot::RwLock;
+use peer::TxRelay;
 use std::{
     collections::{HashMap, HashSet},
     net::TcpStream,
@@ -80,6 +81,7 @@ impl From<Wtxid> for GenericTxid {
 #[derive(Default)]
 pub struct State {
     pub peers: HashMap<SocketAddr, Arc<Peer>>,
+    pub header_sync_peer: Option<Arc<Peer>>,
     tx_map: HashSet<GenericTxid>,
     block_map: HashSet<BlockHash>,
     verifying: HashSet<sha256d::Hash>,
@@ -97,15 +99,46 @@ pub fn maintain_peers(peer_manager: Arc<PeerManager>) {
                 addrs.extend(seed_addrs);
             }
         }
+        use rand::prelude::*;
+        let mut rng = rand::thread_rng();
+        addrs.shuffle(&mut rng);
     };
 
     loop {
-        peer_manager
-            .state
-            .write()
-            .peers
-            .retain(|_, peer| !peer.state.read().disconnect);
-        while peer_manager.state.read().peers.len() < 1 {
+        let removed = {
+            let state = &mut *peer_manager.state.write();
+            let block_map = &mut state.block_map;
+            let header_sync_peer = &mut state.header_sync_peer;
+            let mut removed = false;
+
+            state.peers.retain(|_, peer| {
+                let mut peer_state = peer.state.write();
+                if peer_state.disconnect {
+                    for hash in peer_state.block_map.drain() {
+                        block_map.remove(&hash);
+                    }
+
+                    if let Some(hsp) = header_sync_peer {
+                        if std::ptr::eq(peer, hsp) {
+                            header_sync_peer.take();
+                        }
+                    }
+
+                    removed = true;
+                    false
+                } else {
+                    true
+                }
+            });
+
+            removed
+        };
+
+        if removed {
+            peer_manager.get_next_blocks().unwrap();
+        }
+
+        while peer_manager.state.read().peers.len() < 8 {
             if let Some(addr) = addrs.pop() {
                 info!("connecting to {}", addr);
                 if let Ok(stream) = TcpStream::connect_timeout(&addr, Duration::from_secs(10)) {
@@ -200,6 +233,10 @@ impl PeerManager {
     }
 
     pub fn handle_inv(&self, peer: PeerRef, items: Vec<Inventory>) -> Result<()> {
+        if !self.chain.read().synced() {
+            return Ok(());
+        }
+
         let mut txids = vec![];
 
         let mut peer_state = peer.state.write();
@@ -406,19 +443,18 @@ impl PeerManager {
 
     pub fn handle_tx(&self, peer: PeerRef, tx: Transaction) {
         let gtxid = {
-            let mut state = self.state.write();
+            // let mut state = self.state.write();
             let mut peer_state = peer.state.write();
 
-            let gtxid = if peer_state.wtxid_relay {
-                tx.wtxid().into()
-            } else {
-                tx.txid().into()
+            let gtxid = match peer_state.tx_relay {
+                TxRelay::Txid => tx.txid().into(),
+                TxRelay::Wtxid => tx.wtxid().into(),
             };
 
             if !peer_state.tx_map.remove(&gtxid) {
                 return;
             }
-            state.tx_map.remove(&gtxid);
+            // state.tx_map.remove(&gtxid);
 
             gtxid
         };
@@ -450,46 +486,55 @@ impl PeerManager {
 
         assert!(self.state.write().verifying.remove(&hash.as_hash()));
 
-        self.get_next_blocks(peer)
+        self.get_next_blocks()
     }
 
-    pub fn get_next_blocks(&self, peer: PeerRef) -> Result<()> {
+    pub fn get_next_blocks(&self) -> Result<()> {
         let chain = self.chain.read();
-        let mut state = self.state.write();
-        let mut peer_state = peer.state.write();
+        let state = &mut *self.state.write();
 
-        if chain.is_recent() && state.block_map.is_empty() {
-            let mut height = chain.tip.height;
+        for peer in state.peers.values() {
+            let mut peer_state = peer.state.write();
 
-            let mut hashes = vec![];
-
-            while hashes.is_empty() && height <= chain.most_work().height {
-                let next = chain
-                    .db
-                    .get_next_path(chain.most_work(), height, 16)
-                    .into_iter()
-                    .filter_map(|e| {
-                        if state.verifying.contains(&e.hash.as_hash()) || chain.db.has_block(e.hash)
-                        {
-                            None
-                        } else {
-                            Some(e.hash)
-                        }
-                    });
-                hashes.extend(next);
-                height += 16;
+            if !peer_state.ack {
+                continue;
             }
 
-            for hash in &hashes {
-                state.block_map.insert(*hash);
-                peer_state.block_map.insert(*hash);
-            }
+            if chain.is_recent() && peer_state.block_map.is_empty() {
+                let mut height = chain.tip.height;
 
-            drop(state);
-            drop(peer_state);
-            drop(chain);
-            peer.get_blocks(hashes)?;
+                let mut hashes = vec![];
+
+                while hashes.is_empty() && height <= chain.most_work().height {
+                    let next = chain
+                        .db
+                        .get_next_path(chain.most_work(), height, 16)
+                        .into_iter()
+                        .filter_map(|e| {
+                            if state.verifying.contains(&e.hash.as_hash())
+                                || chain.db.has_block(e.hash)
+                                || state.block_map.contains(&e.hash)
+                            {
+                                None
+                            } else {
+                                Some(e.hash)
+                            }
+                        });
+                    hashes.extend(next);
+                    height += 16;
+                }
+
+                for hash in &hashes {
+                    state.block_map.insert(*hash);
+                    peer_state.block_map.insert(*hash);
+                }
+
+                drop(peer_state);
+
+                peer.get_blocks(hashes)?;
+            }
         }
+
         Ok(())
     }
 
@@ -597,7 +642,7 @@ impl PeerManager {
         drop(peer_state);
         drop(chain);
 
-        self.get_next_blocks(peer)
+        self.get_next_blocks()
     }
 
     pub fn handle_compact_block(
@@ -720,6 +765,30 @@ impl PeerManager {
         peer.send_compact(true)?;
         peer.send_get_addr()?;
 
+        let mut state = self.state.write();
+        let chain = self.chain.read();
+
+        if peer.outbound {
+            let ask_for_headers = {
+                if state.header_sync_peer.is_none() {
+                    state.header_sync_peer = Some(peer.clone());
+                    true
+                } else if chain.synced() {
+                    true
+                } else {
+                    false
+                }
+            };
+
+            if ask_for_headers {
+                let best = chain.most_work();
+                let hash = chain.db.get_entry_by_hash(&best.prev_block).map(|e| e.hash);
+                let locator_hashes = chain.get_locator(hash);
+
+                peer.send_get_headers(locator_hashes, None)?;
+            }
+        }
+
         // TODO: Announce
 
         // TODO: Set new fee rate when synced
@@ -730,13 +799,6 @@ impl PeerManager {
 
         // if chain.synced() {
         //     peer.send_mempool();
-        // }
-
-        // if peer.outbound {
-        //     let best = chain.most_work();
-        //     let hash = chain.db.get_entry_by_hash(&best.prev_block).map(|e| e.hash);
-        //     let locator_hashes = chain.get_locator(hash);
-        //     peer.send_get_headers(locator_hashes, None)?;
         // }
 
         Ok(())

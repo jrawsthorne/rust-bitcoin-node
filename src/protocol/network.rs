@@ -40,6 +40,7 @@ pub struct NetworkParams {
     pub rule_change_activation_threshold: u32,
     pub miner_confirmation_window: u32,
     pub bip30: HashMap<u32, BlockHash>,
+    pub expected_tx_count: u64,
 }
 
 impl Default for NetworkParams {
@@ -78,12 +79,14 @@ impl NetworkParams {
                 pow_limit,
                 pow_limit_bits,
                 dns_seeds: vec![
-                    "seed.bitcoin.sipa.be",          // Pieter Wuille
-                    "dnsseed.bluematt.me",           // Matt Corallo
-                    "dnsseed.bitcoin.dashjr.org",    // Luke Dashjr
-                    "seed.bitcoinstats.com",         // Christian Decker
-                    "seed.bitcoin.jonasschnelli.ch", // Jonas Schnelli
-                    "seed.btc.petertodd.org",        // Peter Todd
+                    "seed.bitcoin.sipa.be", // Pieter Wuille, only supports x1, x5, x9, and xd
+                    "dnsseed.bluematt.me",  // Matt Corallo, only supports x9
+                    "dnsseed.bitcoin.dashjr.org", // Luke Dashjr
+                    "seed.bitcoinstats.com", // Christian Decker, supports x1 - xf
+                    "seed.bitcoin.jonasschnelli.ch", // Jonas Schnelli, only supports x1, x5, x9, and xd
+                    "seed.btc.petertodd.org",        // Peter Todd, only supports x1, x5, x9, and xd
+                    "seed.bitcoin.sprovoost.nl",     // Sjors Provoost
+                    "dnsseed.emzy.de",               // Stephan Oeste
                 ],
                 bip16_time,
                 bip34_height,
@@ -110,6 +113,7 @@ impl NetworkParams {
                     91842 => b("00000000000a4d0a398161ffc163c503763b1f4360639393e0e4c8e300e0caec"),
                     91880 => b("00000000000743f190a18c5577a3c2d2a1f610ae9601ac046a38084ccb7cd721")
                 },
+                expected_tx_count: 590_390_085, // 0000000000000000000749f392fbcea22a93939baaf481d1ec14bc9a084845f3
             },
             Network::Testnet => Self {
                 network,
@@ -143,6 +147,7 @@ impl NetworkParams {
                 rule_change_activation_threshold,
                 miner_confirmation_window,
                 bip30: Default::default(),
+                expected_tx_count: 58_401_978, // 0000000000000053b17c9df0accfaacbde3154283c237842f4b669debc8257e5
             },
             Network::Regtest | Network::Signet => Self {
                 network,
@@ -171,6 +176,7 @@ impl NetworkParams {
                 rule_change_activation_threshold,
                 miner_confirmation_window,
                 bip30: Default::default(),
+                expected_tx_count: 0,
             },
         }
     }

@@ -19,7 +19,7 @@ use bitcoin::{
     util::uint::Uint256,
     Block, BlockHash, BlockHeader, Network, Transaction,
 };
-use log::{debug, error, info, warn};
+use log::{error, info, warn};
 use rayon::prelude::*;
 use std::collections::VecDeque;
 use std::{path::PathBuf, time::Instant};
@@ -293,6 +293,7 @@ impl Chain {
         Ok(())
     }
 
+    // TODO: Completely change the way this is done. Core keeps best candidate block using map of block -> parent
     fn get_next_best(&self, entry: ChainEntry) -> Result<VecDeque<ChainEntry>, DBError> {
         fn get_next_best(
             chain: &Chain,
@@ -591,15 +592,14 @@ impl Chain {
 
         self.notify_connect(&entry, block, &view);
 
-        debug!(
+        info!(
             "Block {} ({}) added to chain (size={} txs={} time={}ms progress={:.2}%)",
             entry.hash,
             entry.height,
             block.get_size(),
             block.txdata.len(),
             ms_since(&start),
-            // TODO: Export to constant
-            (self.db.state.tx as f64 / 545_000_000.0) * 100.0
+            (self.db.state.tx as f64 / self.options.network.expected_tx_count as f64) * 100.0,
         );
 
         Ok(entry)
