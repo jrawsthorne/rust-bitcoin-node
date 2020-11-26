@@ -122,7 +122,6 @@ impl PeerManager {
 
             state.header_sync_peer = Some(peer.clone());
 
-            // ask all peers for headers
             drop(state);
             self.send_sync(&peer);
         }
@@ -209,7 +208,7 @@ impl PeerManager {
         let staller = self.get_next_blocks(peer, best);
 
         if let Some(staller) = staller {
-            let mut state = self.state.lock();
+            let state = self.state.lock();
             let slow = state.peers.get(&staller);
             if let Some(slow) = slow {
                 let mut peer_state = slow.state.lock();
@@ -223,10 +222,6 @@ impl PeerManager {
                 } else {
                     peer_state.stalling_since.replace(now);
                 }
-            } else {
-                // TODO: fix lock syncronisation to prevent this
-                state.requested_blocks.retain(|_, addr| *addr != staller);
-                self.queue_resolve_headers();
             }
         }
     }
@@ -578,7 +573,7 @@ async fn maintain_peers(peer_manager: Arc<PeerManager>) {
             }
         }
 
-        sleep(Duration::from_secs(10)).await;
+        sleep(Duration::from_secs(1)).await;
     }
 }
 
@@ -653,6 +648,8 @@ async fn run_peer(peer: Arc<Peer>, mut event_rx: EventReceiver, peer_manager: Ar
         }
     }
 
+    peer.state.lock().disconnected = true;
+
     peer_manager.peer_disconnected(peer);
 }
 
@@ -677,7 +674,7 @@ async fn disconnect_stalling_peers(peer_manager: Arc<PeerManager>) {
                 && peer_state.requested_blocks.len() > 0
                 && matches!(peer_state.block_time, Some(block_time) if now > block_time + 120)
             {
-                warn!("peer stalling block");
+                warn!("peer stalling block ({})", peer.addr);
                 drop(peer_state);
                 peer.disconnect(Some(anyhow!("Peer is stalling (block)")));
                 continue;
@@ -685,7 +682,7 @@ async fn disconnect_stalling_peers(peer_manager: Arc<PeerManager>) {
 
             if let Some(stalling_since) = peer_state.stalling_since {
                 if now > stalling_since + 2 {
-                    warn!("peer stalling block download");
+                    warn!("peer stalling block download ({})", peer.addr);
                     drop(peer_state);
                     peer.disconnect(Some(anyhow!("Peer is stalling block download window")));
                     continue;
@@ -719,5 +716,43 @@ fn add_blocks(peer_manager: Arc<PeerManager>, rx: mpsc::Receiver<AddBlocksEvent>
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use bitcoin::Network;
+
+    use crate::blockchain::ChainOptions;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn test_disconnect() {
+        env_logger::builder().format_timestamp_millis().init();
+
+        let network_params = NetworkParams::from_network(Network::Bitcoin);
+
+        let chain = RwLock::new(
+            Chain::new(ChainOptions {
+                network: network_params.clone(),
+                verify_scripts: true,
+                path: "./data".into(),
+            })
+            .unwrap(),
+        );
+
+        let peer_manager = PeerManager::new(8, network_params, chain);
+
+        sleep(Duration::from_secs(10)).await;
+
+        {
+            let state = peer_manager.state.lock();
+            for peer in state.peers.values() {
+                peer.disconnect(Some(anyhow!("test error")));
+            }
+        }
+
+        sleep(Duration::from_secs(10)).await;
     }
 }
