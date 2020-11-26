@@ -42,7 +42,7 @@ pub struct State {
 impl State {
     pub fn is_header_sync_peer(&self, peer: PeerRef) -> bool {
         match &self.header_sync_peer {
-            Some(header_sync_peer) => std::ptr::eq(header_sync_peer, peer),
+            Some(header_sync_peer) => header_sync_peer.addr == peer.addr,
             None => false,
         }
     }
