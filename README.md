@@ -1,5 +1,21 @@
 # rust-bitcoin-node
 
-I'm writing a bitcoin full node implementation to learn about how bitcoin works in detail. I'll be using the rust-bitcoin library for most of the bitcoin primitives. The aim is to write a safe, concurrent and asyncronous implementation and I'll be using the latest rust features like async/await. A lot of the implementation details will follow how bcoin works because I have experience with JavaScript and no experience with C++.
+Bitcoin full node writen in rust using the family of rust-bitcoin libraries
+
+# Supported Features
+
+- Full block verification (script verification using [http://github.com/rust-bitcoin/rust-bitcoinconsensus](http://github.com/rust-bitcoin/rust-bitcoinconsensus))
+- Compact blocks
+- Mempool
+- Transaction index
+- Address index
+- Compact block filter index and relay
+
+# Todo
+
+See [issues](https://github.com/jrawsthorne/rust-bitcoin-node/issues), mainly
+
+- Mempool size limits & RBF
+- Tor
 
 Please don't only rely on this node for validating the chain.
