@@ -18,16 +18,13 @@ use tokio::{
 };
 
 type WriterMessage = (RawNetworkMessage, Option<oneshot::Sender<()>>);
-type EventMessage = (Event, Option<oneshot::Sender<()>>);
 
-pub type EventReceiver = mpsc::UnboundedReceiver<EventMessage>;
-pub type EventSender = mpsc::UnboundedSender<EventMessage>;
+pub type MessageReceiver = mpsc::Receiver<NetworkMessage>;
+pub type MessageSender = mpsc::Sender<NetworkMessage>;
 
-#[derive(Debug)]
-pub enum Event {
-    Message(NetworkMessage),
-    Disconnected(Result<()>),
-}
+pub type DisconnectMessage = Result<()>;
+pub type DisconnectReceiver = mpsc::UnboundedReceiver<DisconnectMessage>;
+pub type DisconnectSender = mpsc::UnboundedSender<DisconnectMessage>;
 
 pub struct WriteHandle {
     writer_tx: UnboundedSender<WriterMessage>,
@@ -65,20 +62,33 @@ pub fn create_connection(
     network: Network,
 ) -> (
     WriteHandle,
-    mpsc::UnboundedSender<EventMessage>,
-    mpsc::UnboundedReceiver<EventMessage>,
+    MessageReceiver,
+    (DisconnectSender, DisconnectReceiver),
 ) {
     let (writer_tx, writer_rx) = mpsc::unbounded_channel();
-    let (event_tx, event_rx) = mpsc::unbounded_channel();
-    tokio::spawn(run_connection(addr, stream, event_tx.clone(), writer_rx));
+    let (message_tx, message_rx) = mpsc::channel(1);
+    let (disconnect_tx, disconnect_rx) = mpsc::unbounded_channel();
 
-    (WriteHandle { writer_tx, network }, event_tx, event_rx)
+    tokio::spawn(run_connection(
+        addr,
+        stream,
+        message_tx,
+        disconnect_tx.clone(),
+        writer_rx,
+    ));
+
+    (
+        WriteHandle { writer_tx, network },
+        message_rx,
+        (disconnect_tx, disconnect_rx),
+    )
 }
 
 async fn run_connection(
     addr: SocketAddr,
     mut stream: TcpStream,
-    event_tx: EventSender,
+    message_tx: MessageSender,
+    disconnect_tx: DisconnectSender,
     mut writer_rx: mpsc::UnboundedReceiver<WriterMessage>,
 ) {
     let (mut reader, mut writer) = stream.split();
@@ -118,9 +128,7 @@ async fn run_connection(
                 Ok((message, n_bytes)) => {
                     buf.advance(n_bytes);
                     trace!("received {} ({})", message.cmd(), addr);
-                    let (tx, rx) = oneshot::channel();
-                    event_tx.send((Event::Message(message.payload), Some(tx)))?;
-                    let _ = rx.await;
+                    message_tx.send(message.payload).await?;
                 }
                 Err(error) => {
                     use encode::Error;
@@ -151,7 +159,7 @@ async fn run_connection(
         }
     }
 
-    let _ = event_tx.send((Event::Disconnected(result), None));
+    let _ = disconnect_tx.send(result);
 
     trace!("connection disconnected {}", addr);
 }
@@ -171,8 +179,7 @@ mod test {
         let stream = TcpStream::connect("hetzner:18333").await.unwrap();
         let addr = stream.peer_addr().unwrap();
 
-        let (write_handle, event_tx, mut event_rx) =
-            create_connection(addr, stream, Network::Testnet);
+        let (write_handle, mut message_rx, _) = create_connection(addr, stream, Network::Testnet);
 
         let version = VersionMessage {
             version: 70015,
@@ -202,22 +209,16 @@ mod test {
             .await;
 
         // read version message
-        let message = event_rx.recv().await;
+        let message = message_rx.recv().await;
         trace!("{:?}", message);
-        assert!(matches!(
-            message,
-            Some((Event::Message(NetworkMessage::Version(_)), _))
-        ));
+        assert!(matches!(message, Some(NetworkMessage::Version(_))));
 
         // completes immediately
         write_handle.queue_message(NetworkMessage::Verack);
 
         // read verack message
-        let message = event_rx.recv().await;
+        let message = message_rx.recv().await;
         trace!("{:?}", message);
-        assert!(matches!(
-            message,
-            Some((Event::Message(NetworkMessage::Verack), _))
-        ));
+        assert!(matches!(message, Some(NetworkMessage::Verack)));
     }
 }
