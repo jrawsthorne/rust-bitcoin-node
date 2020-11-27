@@ -1,6 +1,5 @@
 use super::connection::{
-    create_connection, DisconnectReceiver, DisconnectSender, MessageReceiver, MessageSender,
-    WriteHandle,
+    create_connection, DisconnectReceiver, DisconnectSender, MessageReceiver, WriteHandle,
 };
 use crate::{protocol::WTXID_RELAY_VERSION, util::now};
 use anyhow::{bail, Result};
@@ -22,7 +21,6 @@ pub struct Peer {
     write_handle: WriteHandle,
     pub state: Mutex<State>,
     outbound: bool,
-    message_tx: MessageSender,
     disconnect_tx: DisconnectSender,
 }
 
@@ -119,14 +117,13 @@ impl Peer {
         stream: TcpStream,
         network: Network,
     ) -> (Self, MessageReceiver, DisconnectReceiver) {
-        let (write_handle, (message_tx, message_rx), (disconnect_tx, disconnect_rx)) =
+        let (write_handle, message_rx, (disconnect_tx, disconnect_rx)) =
             create_connection(addr, stream, network);
         let peer = Self {
             addr,
             write_handle,
             outbound: true,
             state: Default::default(),
-            message_tx,
             disconnect_tx,
         };
         (peer, message_rx, disconnect_rx)
@@ -398,8 +395,8 @@ mod test {
 
         peer.handshake(&mut event_rx).await.unwrap();
 
-        peer.disconnect(Ok(()));
+        peer.disconnect(Err(anyhow::anyhow!("force disconnect")));
 
-        disconnect_rx.try_recv().unwrap();
+        disconnect_rx.try_recv().unwrap().unwrap_err();
     }
 }

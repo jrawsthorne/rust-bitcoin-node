@@ -62,7 +62,7 @@ pub fn create_connection(
     network: Network,
 ) -> (
     WriteHandle,
-    (MessageSender, MessageReceiver),
+    MessageReceiver,
     (DisconnectSender, DisconnectReceiver),
 ) {
     let (writer_tx, writer_rx) = mpsc::unbounded_channel();
@@ -72,14 +72,14 @@ pub fn create_connection(
     tokio::spawn(run_connection(
         addr,
         stream,
-        message_tx.clone(),
+        message_tx,
         disconnect_tx.clone(),
         writer_rx,
     ));
 
     (
         WriteHandle { writer_tx, network },
-        (message_tx, message_rx),
+        message_rx,
         (disconnect_tx, disconnect_rx),
     )
 }
@@ -179,8 +179,7 @@ mod test {
         let stream = TcpStream::connect("hetzner:18333").await.unwrap();
         let addr = stream.peer_addr().unwrap();
 
-        let (write_handle, (_, mut message_rx), _) =
-            create_connection(addr, stream, Network::Testnet);
+        let (write_handle, mut message_rx, _) = create_connection(addr, stream, Network::Testnet);
 
         let version = VersionMessage {
             version: 70015,
