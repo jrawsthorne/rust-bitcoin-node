@@ -400,8 +400,21 @@ mod test {
 
         peer.handshake(&mut event_rx).await.unwrap();
 
-        peer.disconnect(Err(anyhow::anyhow!("force disconnect")));
+        #[derive(Debug, thiserror::Error, Eq, PartialEq, Clone)]
+        #[error("{0}")]
+        struct CustomError(String);
 
-        disconnect_rx.try_recv().unwrap().unwrap_err();
+        let error = CustomError("force disconnect".to_string());
+
+        peer.disconnect(Err(error.clone().into()));
+
+        let received_error: CustomError = disconnect_rx
+            .try_recv()
+            .unwrap()
+            .unwrap_err()
+            .downcast()
+            .unwrap();
+
+        assert_eq!(received_error, error);
     }
 }
