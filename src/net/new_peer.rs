@@ -11,7 +11,7 @@ use bitcoin::{
     },
     BlockHash, Network,
 };
-use log::debug;
+use log::{debug, trace};
 use parking_lot::Mutex;
 use std::{collections::HashMap, net::SocketAddr};
 use tokio::net::TcpStream;
@@ -130,8 +130,13 @@ impl Peer {
     }
 
     pub fn disconnect(&self, error: Result<()>) {
-        self.state.lock().disconnected = true;
-        let _ = self.disconnect_tx.send(error);
+        let mut state = self.state.lock();
+        if state.disconnected {
+            return;
+        }
+        state.disconnected = true;
+        self.disconnect_tx.send(error).unwrap();
+        trace!("sent disconnect signal ({})", self.addr);
     }
 
     pub async fn handshake(&self, event_rx: &mut MessageReceiver) -> Result<()> {

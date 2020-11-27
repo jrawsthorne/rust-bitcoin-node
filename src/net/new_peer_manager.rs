@@ -172,7 +172,7 @@ impl PeerManager {
         true
     }
 
-    fn resolve_headers_for_peer(&self, peer: PeerRef) {
+    async fn resolve_headers_for_peer<'a>(&self, peer: PeerRef<'a>) {
         if !self.is_syncable(peer) {
             return;
         }
@@ -205,7 +205,7 @@ impl PeerManager {
             }
         };
 
-        let staller = self.get_next_blocks(peer, best);
+        let staller = self.get_next_blocks(peer, best).await;
 
         if let Some(staller) = staller {
             let state = self.state.lock();
@@ -226,7 +226,7 @@ impl PeerManager {
         }
     }
 
-    fn get_next_blocks(&self, peer: &Peer, best: ChainEntry) -> Option<SocketAddr> {
+    async fn get_next_blocks(&self, peer: &Peer, best: ChainEntry) -> Option<SocketAddr> {
         let mut items = vec![];
         let mut saved = vec![];
         let mut waiting = None;
@@ -335,8 +335,7 @@ impl PeerManager {
         }
 
         if !saved.is_empty() {
-            self.attach_block(saved[0]);
-            self.queue_resolve_headers();
+            self.attach_block(saved[0]).await;
         }
 
         if items.is_empty() {
@@ -349,11 +348,13 @@ impl PeerManager {
     }
 
     // TODO: Handle errors
-    fn attach_block(&self, entry: ChainEntry) {
+    async fn attach_block(&self, entry: ChainEntry) {
+        let (tx, rx) = oneshot::channel();
         self.add_blocks_tx
             .lock()
-            .send(AddBlocksEvent::Attach(entry))
+            .send(AddBlocksEvent::Attach(entry, tx))
             .expect("thread panicked");
+        rx.await.expect("thread panicked");
     }
 
     fn get_block(&self, peer: &Peer, hashes: Vec<BlockHash>) {
@@ -406,23 +407,25 @@ impl PeerManager {
         self.resolve_headers.notify_one();
     }
 
-    fn resolve_headers(&self) {
-        if !self.chain.read().is_recent() {
-            return;
-        }
+    async fn resolve_headers(&self) {
+        let peers = {
+            if !self.chain.read().is_recent() {
+                return;
+            }
 
-        let state = self.state.lock();
+            let state = self.state.lock();
 
-        if state.requested_blocks.len() > BLOCK_DOWNLOAD_WINDOW - MAX_BLOCKS_PER_PEER {
-            return;
-        }
+            if state.requested_blocks.len() > BLOCK_DOWNLOAD_WINDOW - MAX_BLOCKS_PER_PEER {
+                return;
+            }
 
-        let peers: Vec<_> = state.peers.values().cloned().collect();
+            let peers: Vec<_> = state.peers.values().cloned().collect();
 
-        drop(state);
+            peers
+        };
 
         for peer in peers {
-            self.resolve_headers_for_peer(&peer);
+            self.resolve_headers_for_peer(&peer).await;
         }
     }
 }
@@ -694,7 +697,7 @@ async fn run_peer(
 async fn resolve_headers(peer_manager: Arc<PeerManager>) {
     loop {
         peer_manager.resolve_headers.notified().await;
-        peer_manager.resolve_headers();
+        peer_manager.resolve_headers().await;
     }
 }
 
@@ -712,7 +715,6 @@ async fn disconnect_stalling_peers(peer_manager: Arc<PeerManager>) {
                 && peer_state.requested_blocks.len() > 0
                 && matches!(peer_state.block_time, Some(block_time) if now > block_time + 120)
             {
-                warn!("peer stalling block ({})", peer.addr);
                 drop(peer_state);
                 peer.disconnect(Err(anyhow!("Peer is stalling (block)")));
                 continue;
@@ -720,7 +722,6 @@ async fn disconnect_stalling_peers(peer_manager: Arc<PeerManager>) {
 
             if let Some(stalling_since) = peer_state.stalling_since {
                 if now > stalling_since + 2 {
-                    warn!("peer stalling block download ({})", peer.addr);
                     drop(peer_state);
                     peer.disconnect(Err(anyhow!("Peer is stalling block download window")));
                     continue;
@@ -732,7 +733,7 @@ async fn disconnect_stalling_peers(peer_manager: Arc<PeerManager>) {
 
 enum AddBlocksEvent {
     AddBlock(Block, oneshot::Sender<Result<ChainEntry>>),
-    Attach(ChainEntry),
+    Attach(ChainEntry, oneshot::Sender<()>),
 }
 
 fn add_blocks(peer_manager: Arc<PeerManager>, rx: mpsc::Receiver<AddBlocksEvent>) {
@@ -748,10 +749,11 @@ fn add_blocks(peer_manager: Arc<PeerManager>, rx: mpsc::Receiver<AddBlocksEvent>
 
                     let _ = tx.send(res);
                 }
-                AddBlocksEvent::Attach(entry) => {
+                AddBlocksEvent::Attach(entry, tx) => {
                     let mut chain = peer_manager.chain.write();
                     chain.attach(entry).expect("todo");
                     peer_manager.queue_resolve_headers();
+                    let _ = tx.send(());
                 }
             }
         }
