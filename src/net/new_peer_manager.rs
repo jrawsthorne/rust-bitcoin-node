@@ -502,6 +502,16 @@ impl PeerManager {
     }
 
     pub async fn handle_block<'a>(&self, peer: PeerRef<'a>, block: Block) -> Result<()> {
+        // randomly stall for 10 seconds, should trigger stalling logic
+        let y: f64 = {
+            let mut rng = rand::thread_rng();
+            use rand::prelude::*;
+            rng.gen()
+        };
+        if y > 0.9 {
+            sleep(Duration::from_secs(10)).await;
+        }
+
         let hash = block.block_hash();
 
         {
@@ -713,6 +723,7 @@ fn add_blocks(peer_manager: Arc<PeerManager>, rx: mpsc::Receiver<AddBlocksEvent>
                 AddBlocksEvent::Attach(entry) => {
                     let mut chain = peer_manager.chain.write();
                     chain.attach(entry).expect("todo");
+                    peer_manager.queue_resolve_headers();
                 }
             }
         }
