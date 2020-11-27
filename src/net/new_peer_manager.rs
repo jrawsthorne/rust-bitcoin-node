@@ -669,7 +669,8 @@ async fn run_peer(
                             break;
                         }
                     }
-
+                } else {
+                    break;
                 }
             }
             result = disconnect_rx.recv() => {
