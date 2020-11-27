@@ -753,6 +753,7 @@ fn add_blocks(peer_manager: Arc<PeerManager>, rx: mpsc::Receiver<AddBlocksEvent>
 #[cfg(test)]
 mod test {
     use bitcoin::Network;
+    use tokio::task::yield_now;
 
     use crate::blockchain::ChainOptions;
 
@@ -777,13 +778,27 @@ mod test {
 
         sleep(Duration::from_secs(10)).await;
 
+        let mut addrs = vec![];
+
         {
             let state = peer_manager.state.lock();
+
             for peer in state.peers.values() {
-                peer.disconnect(Err(anyhow!("test error")));
+                addrs.push(peer.addr);
+                peer.disconnect(Ok(()));
             }
         }
 
-        sleep(Duration::from_secs(10)).await;
+        loop {
+            {
+                let state = peer_manager.state.lock();
+
+                if addrs.iter().all(|addr| !state.peers.contains_key(addr)) {
+                    break;
+                }
+            }
+
+            yield_now().await;
+        }
     }
 }
