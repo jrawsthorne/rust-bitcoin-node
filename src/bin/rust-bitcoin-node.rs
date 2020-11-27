@@ -6,6 +6,7 @@ use rust_bitcoin_node::{
     net::new_peer_manager::PeerManager,
     protocol::NetworkParams,
 };
+use tokio::signal::unix::{signal, SignalKind};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -49,7 +50,11 @@ async fn main() -> Result<()> {
     );
     let _peer_manager = PeerManager::new(8, network_params, chain);
 
-    tokio::signal::ctrl_c().await.unwrap();
+    signal(SignalKind::terminate())
+        .unwrap()
+        .recv()
+        .await
+        .unwrap();
 
     Ok(())
 }
