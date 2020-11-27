@@ -1,6 +1,6 @@
-use super::{
-    connection::Event,
-    connection::{create_connection, EventReceiver, EventSender, WriteHandle},
+use super::connection::{
+    create_connection, DisconnectReceiver, DisconnectSender, MessageReceiver, MessageSender,
+    WriteHandle,
 };
 use crate::{protocol::WTXID_RELAY_VERSION, util::now};
 use anyhow::{bail, Result};
@@ -22,7 +22,8 @@ pub struct Peer {
     write_handle: WriteHandle,
     pub state: Mutex<State>,
     outbound: bool,
-    event_tx: EventSender,
+    message_tx: MessageSender,
+    disconnect_tx: DisconnectSender,
 }
 
 impl std::fmt::Debug for Peer {
@@ -113,47 +114,46 @@ impl Default for State {
 }
 
 impl Peer {
-    pub fn new(addr: SocketAddr, stream: TcpStream, network: Network) -> (Self, EventReceiver) {
-        let (write_handle, event_tx, event_rx) = create_connection(addr, stream, network);
+    pub fn new(
+        addr: SocketAddr,
+        stream: TcpStream,
+        network: Network,
+    ) -> (Self, MessageReceiver, DisconnectReceiver) {
+        let (write_handle, (message_tx, message_rx), (disconnect_tx, disconnect_rx)) =
+            create_connection(addr, stream, network);
         let peer = Self {
             addr,
             write_handle,
             outbound: true,
             state: Default::default(),
-            event_tx,
+            message_tx,
+            disconnect_tx,
         };
-        (peer, event_rx)
+        (peer, message_rx, disconnect_rx)
     }
 
-    pub fn disconnect(&self, error: Option<anyhow::Error>) {
+    pub fn disconnect(&self, error: Result<()>) {
         self.state.lock().disconnected = true;
-        let res = if let Some(error) = error {
-            Err(error)
-        } else {
-            Ok(())
-        };
-        let _ = self.event_tx.send((Event::Disconnected(res), None));
+        let _ = self.disconnect_tx.send(error);
     }
 
-    pub async fn handshake(&self, event_rx: &mut EventReceiver) -> Result<()> {
+    pub async fn handshake(&self, event_rx: &mut MessageReceiver) -> Result<()> {
         if self.outbound {
             self.queue_version_message();
         }
 
         match event_rx.recv().await {
-            Some((Event::Message(NetworkMessage::Version(version)), _done)) => {
-                self.handle_version(version)?
-            }
+            Some(NetworkMessage::Version(version)) => self.handle_version(version)?,
             _ => bail!("unexpected handshake message"),
         }
 
         loop {
             match event_rx.recv().await {
-                Some((Event::Message(NetworkMessage::Verack), _done)) => {
+                Some(NetworkMessage::Verack) => {
                     self.handle_verack();
                     break;
                 }
-                Some((Event::Message(NetworkMessage::WtxidRelay), _done)) => {
+                Some(NetworkMessage::WtxidRelay) => {
                     if matches!(self.state.lock().version, Some(v) if v >= WTXID_RELAY_VERSION) {
                         self.handle_wtxid_relay();
                     }
@@ -385,7 +385,7 @@ mod test {
 
         let stream = TcpStream::connect("hetzner:18333").await.unwrap();
         let addr = stream.peer_addr().unwrap();
-        let (peer, mut event_rx) = Peer::new(addr, stream, Network::Testnet);
+        let (peer, mut event_rx, _) = Peer::new(addr, stream, Network::Testnet);
 
         peer.handshake(&mut event_rx).await.unwrap();
     }
@@ -394,26 +394,12 @@ mod test {
     async fn force_disconnect() {
         let stream = TcpStream::connect("hetzner:18333").await.unwrap();
         let addr = stream.peer_addr().unwrap();
-        let (peer, mut event_rx) = Peer::new(addr, stream, Network::Testnet);
+        let (peer, mut event_rx, mut disconnect_rx) = Peer::new(addr, stream, Network::Testnet);
 
         peer.handshake(&mut event_rx).await.unwrap();
 
-        peer.disconnect(None);
+        peer.disconnect(Ok(()));
 
-        // one potential incoming message then disconnect
-        // disconnect
-
-        let mut disconnected = false;
-
-        for _ in 0..2 {
-            match event_rx.recv().await {
-                Some((Event::Disconnected(_), _done)) => {
-                    disconnected = true;
-                }
-                _ => {}
-            }
-        }
-
-        assert!(disconnected);
+        disconnect_rx.try_recv().unwrap();
     }
 }

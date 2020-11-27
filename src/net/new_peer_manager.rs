@@ -1,5 +1,5 @@
 use super::{
-    connection::{Event, EventReceiver},
+    connection::{DisconnectReceiver, MessageReceiver},
     new_peer::Peer,
 };
 use crate::{blockchain::Chain, protocol::NetworkParams, util, ChainEntry};
@@ -217,7 +217,7 @@ impl PeerManager {
                 if let Some(stalling_since) = peer_state.stalling_since {
                     if now > stalling_since + 2 {
                         drop(peer_state);
-                        slow.disconnect(Some(anyhow!("Peer is stalling block download window")))
+                        slow.disconnect(Err(anyhow!("Peer is stalling block download window")))
                     }
                 } else {
                     peer_state.stalling_since.replace(now);
@@ -597,13 +597,14 @@ async fn connect_to_peer(addr: SocketAddr, peer_manager: Arc<PeerManager>) {
         // broadcast messages right away rather than waiting for timeout
         let _ = stream.set_nodelay(true);
 
-        let (peer, mut event_rx) = Peer::new(addr, stream, peer_manager.network_params.network);
+        let (peer, mut message_rx, disconnect_rx) =
+            Peer::new(addr, stream, peer_manager.network_params.network);
 
         let peer = Arc::new(peer);
 
         peer_manager.state.lock().peers.insert(addr, peer.clone());
 
-        match timeout(Duration::from_secs(10), peer.handshake(&mut event_rx)).await {
+        match timeout(Duration::from_secs(10), peer.handshake(&mut message_rx)).await {
             Ok(Err(error)) => {
                 warn!(
                     "error during handshake, disconnecting: {} ({})",
@@ -620,7 +621,7 @@ async fn connect_to_peer(addr: SocketAddr, peer_manager: Arc<PeerManager>) {
             _ => {
                 peer_manager.handshake_complete(&peer);
 
-                run_peer(peer, event_rx, peer_manager).await;
+                run_peer(peer, message_rx, disconnect_rx, peer_manager).await;
             }
         }
     } else {
@@ -628,30 +629,56 @@ async fn connect_to_peer(addr: SocketAddr, peer_manager: Arc<PeerManager>) {
     }
 }
 
-async fn run_peer(peer: Arc<Peer>, mut event_rx: EventReceiver, peer_manager: Arc<PeerManager>) {
-    while let Some((event, _done)) = event_rx.recv().await {
-        match event {
-            Event::Message(message) => {
-                if let Err(error) = peer.handle_message(&message) {
-                    warn!(
-                        "error handling message, disconnecting: {} ({})",
-                        error, peer.addr
-                    );
-                    break;
-                }
-                if let Err(error) = peer_manager.handle_message(message, &peer).await {
-                    warn!(
-                        "error handling message, disconnecting: {} ({})",
-                        error, peer.addr
-                    );
-                    break;
+// TODO: Clean up
+
+async fn run_peer(
+    peer: Arc<Peer>,
+    mut message_rx: MessageReceiver,
+    mut disconnect_rx: DisconnectReceiver,
+    peer_manager: Arc<PeerManager>,
+) {
+    loop {
+        tokio::select! {
+            message = message_rx.recv() => {
+                if let Some(message) = message {
+                    if let Err(error) = peer.handle_message(&message) {
+                        warn!(
+                            "error handling message, disconnecting: {} ({})",
+                            error, peer.addr
+                        );
+                        break;
+                    }
+                    tokio::select! {
+                        result = peer_manager.handle_message(message, &peer) => {
+                            if let Err(error) = result {
+                                warn!(
+                                    "error handling message, disconnecting: {} ({})",
+                                    error, peer.addr
+                                );
+                                break;
+                            }
+                        }
+                        result = disconnect_rx.recv() => {
+                            if let Some(result) = result {
+                                if let Err(error) = result {
+                                    warn!("disconnected with error: {} ({})", error, peer.addr);
+                                } else {
+                                    warn!("disconnected cleanly ({})", peer.addr);
+                                }
+                            }
+                            break;
+                        }
+                    }
+
                 }
             }
-            Event::Disconnected(result) => {
-                if let Err(error) = result {
-                    warn!("disconnected with error: {} ({})", error, peer.addr);
-                } else {
-                    warn!("disconnected cleanly ({})", peer.addr);
+            result = disconnect_rx.recv() => {
+                if let Some(result) = result {
+                    if let Err(error) = result {
+                        warn!("disconnected with error: {} ({})", error, peer.addr);
+                    } else {
+                        warn!("disconnected cleanly ({})", peer.addr);
+                    }
                 }
                 break;
             }
@@ -686,7 +713,7 @@ async fn disconnect_stalling_peers(peer_manager: Arc<PeerManager>) {
             {
                 warn!("peer stalling block ({})", peer.addr);
                 drop(peer_state);
-                peer.disconnect(Some(anyhow!("Peer is stalling (block)")));
+                peer.disconnect(Err(anyhow!("Peer is stalling (block)")));
                 continue;
             }
 
@@ -694,7 +721,7 @@ async fn disconnect_stalling_peers(peer_manager: Arc<PeerManager>) {
                 if now > stalling_since + 2 {
                     warn!("peer stalling block download ({})", peer.addr);
                     drop(peer_state);
-                    peer.disconnect(Some(anyhow!("Peer is stalling block download window")));
+                    peer.disconnect(Err(anyhow!("Peer is stalling block download window")));
                     continue;
                 }
             }
@@ -760,7 +787,7 @@ mod test {
         {
             let state = peer_manager.state.lock();
             for peer in state.peers.values() {
-                peer.disconnect(Some(anyhow!("test error")));
+                peer.disconnect(Err(anyhow!("test error")));
             }
         }
 
