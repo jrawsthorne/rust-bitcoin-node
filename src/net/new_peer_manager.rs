@@ -46,6 +46,24 @@ impl State {
             None => false,
         }
     }
+
+    pub fn new_header_sync_peer(&mut self) -> Option<Arc<Peer>> {
+        if self.peers.is_empty() {
+            let mut peers: Vec<&Arc<Peer>> = self.peers.values().collect();
+
+            let mut rng = rand::thread_rng();
+            use rand::prelude::*;
+            peers.shuffle(&mut rng);
+
+            let peer = peers[0].clone();
+
+            self.header_sync_peer = Some(peer.clone());
+
+            Some(peer)
+        } else {
+            None
+        }
+    }
 }
 
 pub type PeerRef<'a> = &'a Arc<Peer>;
@@ -111,19 +129,11 @@ impl PeerManager {
         }
 
         // if no header sync peer, choose random from connected peers and send get headers
-        if state.header_sync_peer.is_none() && !state.peers.is_empty() {
-            let mut peers: Vec<&Arc<Peer>> = state.peers.values().collect();
-
-            let mut rng = rand::thread_rng();
-            use rand::prelude::*;
-            peers.shuffle(&mut rng);
-
-            let peer = peers[0].clone();
-
-            state.header_sync_peer = Some(peer.clone());
-
-            drop(state);
-            self.send_sync(&peer);
+        if state.header_sync_peer.is_none() {
+            if let Some(peer) = state.new_header_sync_peer() {
+                drop(state);
+                self.send_sync(&peer);
+            }
         }
 
         self.queue_resolve_headers();
@@ -208,20 +218,24 @@ impl PeerManager {
         let staller = self.get_next_blocks(peer, best).await;
 
         if let Some(staller) = staller {
-            let state = self.state.lock();
-            let slow = state.peers.get(&staller);
-            if let Some(slow) = slow {
-                let mut peer_state = slow.state.lock();
-                let now = util::now();
+            self.peer_stalling(staller);
+        }
+    }
 
-                if let Some(stalling_since) = peer_state.stalling_since {
-                    if now > stalling_since + 2 {
-                        drop(peer_state);
-                        slow.disconnect(Err(anyhow!("Peer is stalling block download window")))
-                    }
-                } else {
-                    peer_state.stalling_since.replace(now);
+    fn peer_stalling(&self, staller: SocketAddr) {
+        let state = self.state.lock();
+        let slow = state.peers.get(&staller);
+        if let Some(slow) = slow {
+            let mut peer_state = slow.state.lock();
+            let now = util::now();
+
+            if let Some(stalling_since) = peer_state.stalling_since {
+                if now > stalling_since + 2 {
+                    drop(peer_state);
+                    slow.disconnect(Err(anyhow!("Peer is stalling block download window")))
                 }
+            } else {
+                peer_state.stalling_since.replace(now);
             }
         }
     }
@@ -364,7 +378,6 @@ impl PeerManager {
         let mut state = self.state.lock();
         let mut peer_state = peer.state.lock();
 
-        // TODO: Does this fix stalling peer issue?
         if peer_state.disconnected {
             return;
         }
