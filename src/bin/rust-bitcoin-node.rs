@@ -50,11 +50,7 @@ async fn main() -> Result<()> {
     );
     let _peer_manager = PeerManager::new(8, network_params, chain);
 
-    signal(SignalKind::terminate())
-        .unwrap()
-        .recv()
-        .await
-        .unwrap();
+    signal(SignalKind::hangup()).unwrap().recv().await.unwrap();
 
     Ok(())
 }
