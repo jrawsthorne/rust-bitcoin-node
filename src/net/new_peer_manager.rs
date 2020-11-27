@@ -508,7 +508,7 @@ impl PeerManager {
             use rand::prelude::*;
             rng.gen()
         };
-        if y > 0.9 {
+        if y > 0.999 {
             sleep(Duration::from_secs(10)).await;
         }
 
@@ -672,7 +672,7 @@ async fn resolve_headers(peer_manager: Arc<PeerManager>) {
 
 async fn disconnect_stalling_peers(peer_manager: Arc<PeerManager>) {
     loop {
-        tokio::time::sleep(Duration::from_secs(10)).await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
 
         let state = peer_manager.state.lock();
         for peer in state.peers.values() {
