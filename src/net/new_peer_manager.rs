@@ -505,16 +505,6 @@ impl PeerManager {
     }
 
     pub async fn handle_block<'a>(&self, peer: PeerRef<'a>, block: Block) -> Result<()> {
-        // randomly stall for 10 seconds, should trigger stalling logic
-        let y: f64 = {
-            let mut rng = rand::thread_rng();
-            use rand::prelude::*;
-            rng.gen()
-        };
-        if y > 0.999 {
-            sleep(Duration::from_secs(10)).await;
-        }
-
         let hash = block.block_hash();
 
         {
