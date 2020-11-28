@@ -189,7 +189,7 @@ impl PeerManager {
 
         let best = {
             let peer_state = peer.state.lock();
-            if !peer_state.requested_blocks.is_empty() {
+            if peer_state.requested_blocks.len() >= MAX_BLOCKS_PER_PEER {
                 return;
             }
             match &peer_state.best_hash {
@@ -250,6 +250,13 @@ impl PeerManager {
             let state = self.state.lock();
             let mut peer_state = peer.state.lock();
             let chain = self.chain.read();
+
+            let blocks_to_fetch =
+                MAX_BLOCKS_PER_PEER.saturating_sub(peer_state.requested_blocks.len());
+
+            if blocks_to_fetch == 0 {
+                return None;
+            }
 
             if peer_state.common_hash.is_none() {
                 let common_height = std::cmp::min(chain.height, best.height);
@@ -334,7 +341,7 @@ impl PeerManager {
                     }
 
                     // Stay within peer limit.
-                    if items.len() >= MAX_BLOCKS_PER_PEER {
+                    if items.len() >= blocks_to_fetch {
                         filled = true;
                         break;
                     }
