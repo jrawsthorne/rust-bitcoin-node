@@ -1,3 +1,5 @@
+use bitcoin::consensus::{encode, Decodable, Encodable};
+
 #[derive(Debug, Clone, Copy)]
 pub struct FileRecord {
     pub blocks: u32,
@@ -79,5 +81,47 @@ impl RecordType {
             RecordType::Block => 0,
             RecordType::Undo => 1,
         }
+    }
+}
+
+impl Encodable for FileRecord {
+    fn consensus_encode<W: std::io::Write>(&self, mut e: W) -> Result<usize, encode::Error> {
+        Ok(self.blocks.consensus_encode(&mut e)?
+            + self.used.consensus_encode(&mut e)?
+            + self.length.consensus_encode(&mut e)?)
+    }
+}
+
+impl Decodable for FileRecord {
+    fn consensus_decode<D: std::io::Read>(mut d: D) -> Result<Self, encode::Error> {
+        let blocks = u32::consensus_decode(&mut d)?;
+        let used = u32::consensus_decode(&mut d)?;
+        let length = u32::consensus_decode(&mut d)?;
+        Ok(FileRecord {
+            blocks,
+            used,
+            length,
+        })
+    }
+}
+
+impl Encodable for BlockRecord {
+    fn consensus_encode<W: std::io::Write>(&self, mut e: W) -> Result<usize, encode::Error> {
+        Ok(self.file.consensus_encode(&mut e)?
+            + self.position.consensus_encode(&mut e)?
+            + self.length.consensus_encode(&mut e)?)
+    }
+}
+
+impl Decodable for BlockRecord {
+    fn consensus_decode<D: std::io::Read>(mut d: D) -> Result<Self, encode::Error> {
+        let file = u32::consensus_decode(&mut d)?;
+        let position = u32::consensus_decode(&mut d)?;
+        let length = u32::consensus_decode(&mut d)?;
+        Ok(BlockRecord {
+            file,
+            position,
+            length,
+        })
     }
 }

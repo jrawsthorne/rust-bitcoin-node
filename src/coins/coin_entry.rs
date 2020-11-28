@@ -1,4 +1,7 @@
-use bitcoin::blockdata::transaction::{Transaction, TxOut};
+use bitcoin::{
+    blockdata::transaction::{Transaction, TxOut},
+    consensus::{encode, Decodable, Encodable},
+};
 
 /// A single unspent transaction output or coin
 #[derive(Debug, Clone)]
@@ -40,5 +43,44 @@ impl CoinEntry {
             output: tx.output[index as usize].clone(),
             spent: false,
         }
+    }
+}
+
+pub static MAX_HEIGHT: u32 = u32::max_value();
+
+impl Encodable for CoinEntry {
+    fn consensus_encode<W: std::io::Write>(&self, mut e: W) -> Result<usize, encode::Error> {
+        let mut len = 0;
+        len += self.version.consensus_encode(&mut e)?;
+        len += match self.height {
+            Some(height) => height.consensus_encode(&mut e),
+            None => MAX_HEIGHT.consensus_encode(&mut e),
+        }?;
+        len += self.coinbase.consensus_encode(&mut e)?;
+        len += self.output.consensus_encode(&mut e)?;
+        // TODO: Don't store spent. If it still exists, it can't have been spent
+        len += self.spent.consensus_encode(&mut e)?;
+        Ok(len)
+    }
+}
+
+impl Decodable for CoinEntry {
+    fn consensus_decode<D: std::io::Read>(mut d: D) -> Result<Self, encode::Error> {
+        let version = i32::consensus_decode(&mut d)?;
+        let height = match u32::consensus_decode(&mut d)? {
+            height if height == MAX_HEIGHT => None,
+            height => Some(height),
+        };
+        let coinbase = bool::consensus_decode(&mut d)?;
+        let output = TxOut::consensus_decode(&mut d)?;
+        // TODO: Don't store spent. If it still exists, it can't have been spent
+        let _spent = bool::consensus_decode(&mut d)?;
+        Ok(CoinEntry {
+            version,
+            height,
+            coinbase,
+            output,
+            spent: false,
+        })
     }
 }

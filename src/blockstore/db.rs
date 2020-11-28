@@ -17,29 +17,31 @@ pub enum Key {
 }
 
 impl DBKey for Key {
-    fn encode(&self) -> Result<Vec<u8>, bitcoin::consensus::encode::Error> {
-        Ok(match self {
-            Key::BlockRecord(record_type, hash) => {
-                let mut encoder = Vec::with_capacity(36);
-                record_type.as_u32().consensus_encode(&mut encoder)?;
-                hash.consensus_encode(&mut encoder)?;
-                encoder
-            }
-            Key::LastFile(record_type) => record_type.as_u32().to_le_bytes().to_vec(),
-            Key::File(record_type, fileno) => {
-                let mut encoder = Vec::with_capacity(36);
-                record_type.as_u32().consensus_encode(&mut encoder)?;
-                fileno.consensus_encode(&mut encoder)?;
-                encoder
-            }
-        })
-    }
-
     fn col(&self) -> &'static str {
         match self {
             Key::LastFile(_) => COL_LAST_FILE,
             Key::BlockRecord(_, _) => COL_BLOCK_RECORD,
             Key::File(_, _) => COL_FILE,
         }
+    }
+}
+
+impl Encodable for Key {
+    fn consensus_encode<W: std::io::Write>(
+        &self,
+        mut e: W,
+    ) -> Result<usize, bitcoin::consensus::encode::Error> {
+        Ok(match self {
+            Key::BlockRecord(record_type, hash) => {
+                record_type.as_u32().consensus_encode(&mut e)? + hash.consensus_encode(&mut e)?
+            }
+            Key::LastFile(record_type) => record_type
+                .as_u32()
+                .to_le_bytes()
+                .consensus_encode(&mut e)?,
+            Key::File(record_type, fileno) => {
+                record_type.as_u32().consensus_encode(&mut e)? + fileno.consensus_encode(&mut e)?
+            }
+        })
     }
 }

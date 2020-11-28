@@ -6,10 +6,11 @@ pub use records::{BlockRecord, FileRecord, RecordType};
 
 use crate::{
     coins::UndoCoins,
-    db::{Batch, DBValue, Database, DiskDatabase, IterMode},
+    db::{Batch, Database, DiskDatabase, IterMode},
     error::DBError,
 };
 use bitcoin::{
+    consensus::serialize,
     consensus::{deserialize, Decodable, Encodable},
     hashes::Hash,
     BlockHash, Network,
@@ -24,7 +25,7 @@ use std::{
 };
 
 pub struct BlockStore {
-    db: DiskDatabase<Key>,
+    db: DiskDatabase,
     options: BlockStoreOptions,
 }
 
@@ -40,7 +41,7 @@ impl BlockStore {
         let mut downloaded = HashSet::new();
         for (hash, _) in self
             .db
-            .iter_cf::<BlockRecord>(COL_BLOCK_RECORD, IterMode::Start)
+            .iter_cf::<Key, BlockRecord>(COL_BLOCK_RECORD, IterMode::Start)
             .unwrap()
         {
             let hash = &hash[4..];
@@ -90,7 +91,10 @@ impl BlockStore {
         let mut missing = false;
 
         for fileno in &filenos {
-            if let None = self.db.get::<FileRecord>(Key::File(record_type, *fileno))? {
+            if let None = self
+                .db
+                .get::<_, FileRecord>(Key::File(record_type, *fileno))?
+            {
                 missing = true;
                 break;
             }
@@ -153,7 +157,7 @@ impl BlockStore {
 
                 let block_record = BlockRecord::new(fileno, position as u32, length);
                 blocks += 1;
-                batch.insert(Key::BlockRecord(record_type, hash), &block_record)?;
+                batch.insert(Key::BlockRecord(record_type, hash), &block_record);
             }
 
             let file_record = FileRecord::new(
@@ -162,7 +166,7 @@ impl BlockStore {
                 self.options.max_file_length as u32,
             );
 
-            batch.insert(Key::File(record_type, fileno), &file_record)?;
+            batch.insert(Key::File(record_type, fileno), &file_record);
 
             self.db
                 .write_batch(std::mem::replace(&mut batch, Batch::new()))?;
@@ -244,7 +248,7 @@ impl BlockStore {
     }
 
     pub fn write_undo(&mut self, hash: BlockHash, undo: &UndoCoins) -> Result<(), DBError> {
-        self._write(RecordType::Undo, hash, &undo.encode()?)
+        self._write(RecordType::Undo, hash, &serialize(undo))
     }
 
     pub fn _write(
@@ -295,10 +299,10 @@ impl BlockStore {
 
         let mut batch = Batch::new();
 
-        batch.insert(Key::BlockRecord(record_type, hash), &block_record)?;
-        batch.insert(Key::File(record_type, fileno), &filerecord)?;
+        batch.insert(Key::BlockRecord(record_type, hash), &block_record);
+        batch.insert(Key::File(record_type, fileno), &filerecord);
 
-        batch.insert(Key::LastFile(record_type), &fileno)?;
+        batch.insert(Key::LastFile(record_type), &fileno);
 
         self.db.write_batch(batch)?;
 
@@ -379,7 +383,7 @@ impl BlockStore {
         if file_record.blocks == 0 {
             batch.remove(Key::File(record_type, block_record.file));
         } else {
-            batch.insert(Key::File(record_type, block_record.file), &file_record)?;
+            batch.insert(Key::File(record_type, block_record.file), &file_record);
         }
 
         batch.remove(Key::BlockRecord(record_type, hash));

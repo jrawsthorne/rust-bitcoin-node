@@ -4,8 +4,8 @@ use crate::{
     ChainEntry, CoinView,
 };
 use bitcoin::{
-    consensus::{encode, Decodable, Encodable},
-    hashes::Hash,
+    consensus::serialize,
+    consensus::{encode, Decodable, Encodable, WriteExt},
     util::address::Payload,
     Address, AddressType, Block, Network, Txid, VarInt,
 };
@@ -13,7 +13,7 @@ use parking_lot::RwLock;
 use std::{collections::HashSet, convert::TryInto, io::Cursor, path::Path, sync::Arc};
 
 pub struct AddrIndexer {
-    db: DiskDatabase<Key>,
+    db: DiskDatabase,
     network: Network,
 }
 
@@ -46,13 +46,19 @@ pub enum Key {
 }
 
 impl DBKey for Key {
-    fn encode(&self) -> Result<Vec<u8>, encode::Error> {
-        let mut encoder = vec![];
+    fn col(&self) -> &'static str {
+        COL_ADDR
+    }
+}
+
+impl Encodable for Key {
+    fn consensus_encode<W: std::io::Write>(&self, mut e: W) -> Result<usize, encode::Error> {
+        let mut len = 0;
         let addr = match self {
             Key::TxidByHeightAndIndex(height, index) => {
-                height.consensus_encode(&mut encoder)?;
-                index.consensus_encode(&mut encoder)?;
-                return Ok(encoder);
+                len += height.consensus_encode(&mut e)?;
+                len += index.consensus_encode(&mut e)?;
+                return Ok(len);
             }
             Key::AddrMap(addr, _, _) => addr,
             Key::Address(addr) => addr,
@@ -66,60 +72,27 @@ impl DBKey for Key {
             AddressType::P2wpkh => 2,
             AddressType::P2wsh => 3,
         };
-        address_type.consensus_encode(&mut encoder)?;
-        match &addr.payload {
+        len += address_type.consensus_encode(&mut e)?;
+        len += match &addr.payload {
             Payload::PubkeyHash(hash) => {
-                hash.into_inner().to_vec().consensus_encode(&mut encoder)?;
+                e.emit_slice(hash)?;
+                hash.len()
             }
             Payload::ScriptHash(hash) => {
-                hash.into_inner().to_vec().consensus_encode(&mut encoder)?;
+                e.emit_slice(hash)?;
+                hash.len()
             }
-            Payload::WitnessProgram { program, .. } => {
-                program.consensus_encode(&mut encoder)?;
-            }
-        }
+            Payload::WitnessProgram { program, .. } => program.consensus_encode(&mut e)?,
+        };
         if let Key::AddrMap(_, height, index) = self {
-            height.to_be_bytes().consensus_encode(&mut encoder)?;
-            index.to_be_bytes().consensus_encode(&mut encoder)?;
+            len += height.to_be_bytes().consensus_encode(&mut e)?;
+            len += index.to_be_bytes().consensus_encode(&mut e)?;
         }
-        Ok(encoder)
-    }
-
-    fn col(&self) -> &'static str {
-        COL_ADDR
+        Ok(len)
     }
 }
 
 pub const COL_ADDR: &str = "A";
-
-impl DBKey for Address {
-    fn encode(&self) -> Result<Vec<u8>, encode::Error> {
-        let mut encoder = vec![];
-        let address_type: u8 = match self.address_type().expect("bad address type") {
-            AddressType::P2pkh => 0,
-            AddressType::P2sh => 1,
-            AddressType::P2wpkh => 2,
-            AddressType::P2wsh => 3,
-        };
-        address_type.consensus_encode(&mut encoder)?;
-        match &self.payload {
-            Payload::PubkeyHash(hash) => {
-                hash.into_inner().to_vec().consensus_encode(&mut encoder)?;
-            }
-            Payload::ScriptHash(hash) => {
-                hash.into_inner().to_vec().consensus_encode(&mut encoder)?;
-            }
-            Payload::WitnessProgram { program, .. } => {
-                program.consensus_encode(&mut encoder)?;
-            }
-        }
-        Ok(encoder)
-    }
-
-    fn col(&self) -> &'static str {
-        COL_ADDR
-    }
-}
 
 const DUMMY: &Vec<u8> = &vec![];
 
@@ -141,9 +114,7 @@ impl AddrIndexer {
                     if let Some(addr) = Address::from_script(&previous_output, self.network) {
                         if addr.is_standard() {
                             has_address = true;
-                            batch
-                                .insert(Key::AddrMap(addr, entry.height, index as u32), DUMMY)
-                                .unwrap();
+                            batch.insert(Key::AddrMap(addr, entry.height, index as u32), DUMMY);
                         }
                     }
                 }
@@ -152,19 +123,15 @@ impl AddrIndexer {
                 if let Some(addr) = Address::from_script(&output.script_pubkey, self.network) {
                     if addr.is_standard() {
                         has_address = true;
-                        batch
-                            .insert(Key::AddrMap(addr, entry.height, index as u32), DUMMY)
-                            .unwrap();
+                        batch.insert(Key::AddrMap(addr, entry.height, index as u32), DUMMY);
                     }
                 }
             }
             if has_address {
-                batch
-                    .insert(
-                        Key::TxidByHeightAndIndex(entry.height, index as u32),
-                        &tx.txid(),
-                    )
-                    .unwrap();
+                batch.insert(
+                    Key::TxidByHeightAndIndex(entry.height, index as u32),
+                    &tx.txid(),
+                );
             }
         }
         self.db.write_batch(batch).unwrap();
@@ -204,14 +171,16 @@ impl AddrIndexer {
     pub fn txids_for_address(&self, address: Address) -> HashSet<Txid> {
         let mut txids = HashSet::new();
 
-        let max = Key::AddrMap(address.clone(), u32::max_value(), u32::max_value())
-            .encode()
-            .unwrap()
-            .into_boxed_slice();
+        let max = serialize(&Key::AddrMap(
+            address.clone(),
+            u32::max_value(),
+            u32::max_value(),
+        ))
+        .into_boxed_slice();
 
         for (key, _) in self
             .db
-            .iter_cf::<Vec<u8>>(
+            .iter_cf::<Key, Vec<u8>>(
                 COL_ADDR,
                 crate::db::IterMode::From(Key::Address(address), IterDirection::Forward),
             )

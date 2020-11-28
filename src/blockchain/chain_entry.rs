@@ -1,5 +1,8 @@
 use crate::protocol::{VERSIONBITS_TOP_BITS, VERSIONBITS_TOP_MASK};
-use bitcoin::{util::uint::Uint256, Block, BlockHash, BlockHeader, TxMerkleNode};
+use bitcoin::{
+    consensus::encode, consensus::Decodable, consensus::Encodable, util::uint::Uint256, Block,
+    BlockHash, BlockHeader, TxMerkleNode,
+};
 
 /// An entry in the blockchain.
 /// Essentially a block header with its height in the blockchain specified
@@ -69,5 +72,47 @@ impl From<&ChainEntry> for BlockHeader {
             bits: entry.bits,
             nonce: entry.nonce,
         }
+    }
+}
+
+impl Encodable for ChainEntry {
+    fn consensus_encode<W: std::io::Write>(&self, mut e: W) -> Result<usize, encode::Error> {
+        Ok(self.hash.consensus_encode(&mut e)?
+            + self.version.consensus_encode(&mut e)?
+            + self.prev_block.consensus_encode(&mut e)?
+            + self.merkle_root.consensus_encode(&mut e)?
+            + self.time.consensus_encode(&mut e)?
+            + self.bits.consensus_encode(&mut e)?
+            + self.nonce.consensus_encode(&mut e)?
+            + self.height.consensus_encode(&mut e)?
+            + self.chainwork.consensus_encode(&mut e)?
+            + self.skip.consensus_encode(&mut e)?)
+    }
+}
+
+impl Decodable for ChainEntry {
+    fn consensus_decode<D: std::io::Read>(mut d: D) -> Result<Self, encode::Error> {
+        let hash = BlockHash::consensus_decode(&mut d)?;
+        let version = i32::consensus_decode(&mut d)?;
+        let prev_block = BlockHash::consensus_decode(&mut d)?;
+        let merkle_root = TxMerkleNode::consensus_decode(&mut d)?;
+        let time = u32::consensus_decode(&mut d)?;
+        let bits = u32::consensus_decode(&mut d)?;
+        let nonce = u32::consensus_decode(&mut d)?;
+        let height = u32::consensus_decode(&mut d)?;
+        let chainwork = Uint256::consensus_decode(&mut d)?;
+        let skip = BlockHash::consensus_decode(&mut d)?;
+        Ok(ChainEntry {
+            hash,
+            version,
+            prev_block,
+            merkle_root,
+            time,
+            bits,
+            nonce,
+            height,
+            chainwork,
+            skip,
+        })
     }
 }

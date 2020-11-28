@@ -1,4 +1,5 @@
-pub trait DBKey {
-    fn encode(&self) -> Result<Vec<u8>, bitcoin::consensus::encode::Error>;
+use bitcoin::consensus::Encodable;
+
+pub trait DBKey: Encodable {
     fn col(&self) -> &'static str;
 }

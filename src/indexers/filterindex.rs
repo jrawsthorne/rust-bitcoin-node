@@ -32,19 +32,6 @@ pub enum Key {
 }
 
 impl DBKey for Key {
-    fn encode(&self) -> Result<Vec<u8>, bitcoin::consensus::encode::Error> {
-        let mut encoder = vec![];
-        match self {
-            Key::Filter(height) | Key::FilterHash(height) | Key::FilterHeader(height) => {
-                height.consensus_encode(&mut encoder)?;
-            }
-            Key::Height(hash) => {
-                hash.consensus_encode(&mut encoder)?;
-            }
-        }
-        Ok(encoder)
-    }
-
     fn col(&self) -> &'static str {
         match self {
             Key::Filter(_) => COL_FILTER,
@@ -55,8 +42,22 @@ impl DBKey for Key {
     }
 }
 
+impl Encodable for Key {
+    fn consensus_encode<W: std::io::Write>(
+        &self,
+        mut e: W,
+    ) -> Result<usize, bitcoin::consensus::encode::Error> {
+        Ok(match self {
+            Key::Filter(height) | Key::FilterHash(height) | Key::FilterHeader(height) => {
+                height.consensus_encode(&mut e)?
+            }
+            Key::Height(hash) => hash.consensus_encode(&mut e)?,
+        })
+    }
+}
+
 pub struct FilterIndexer {
-    db: Arc<DiskDatabase<Key>>,
+    db: Arc<DiskDatabase>,
 }
 
 impl ChainListener for Arc<RwLock<FilterIndexer>> {
@@ -156,18 +157,10 @@ impl FilterIndexer {
 
         let mut batch = Batch::new();
 
-        batch
-            .insert(Key::Height(entry.hash), &entry.height)
-            .unwrap();
-        batch
-            .insert(Key::FilterHeader(entry.height), &filter_header)
-            .unwrap();
-        batch
-            .insert(Key::FilterHash(entry.height), &filter_hash)
-            .unwrap();
-        batch
-            .insert(Key::Filter(entry.height), &filter.content)
-            .unwrap();
+        batch.insert(Key::Height(entry.hash), &entry.height);
+        batch.insert(Key::FilterHeader(entry.height), &filter_header);
+        batch.insert(Key::FilterHash(entry.height), &filter_hash);
+        batch.insert(Key::Filter(entry.height), &filter.content);
 
         self.db.write_batch(batch).unwrap();
     }

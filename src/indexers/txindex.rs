@@ -1,6 +1,6 @@
 use crate::{
     blockchain::{Chain, ChainListener},
-    db::{Batch, DBKey, DBValue, Database, DiskDatabase},
+    db::{Batch, DBKey, Database, DiskDatabase},
     ChainEntry,
 };
 use bitcoin::{
@@ -11,7 +11,7 @@ use parking_lot::RwLock;
 use std::{path::Path, sync::Arc};
 
 pub struct TxIndexer {
-    db: DiskDatabase<Txid>,
+    db: DiskDatabase,
 }
 
 impl ChainListener for Arc<RwLock<TxIndexer>> {
@@ -38,31 +38,31 @@ impl ChainListener for Arc<RwLock<TxIndexer>> {
 
 pub struct TxMap(u32, u32, u32);
 
-impl DBValue for TxMap {
-    fn decode<R: std::io::Read>(mut decoder: R) -> Result<Self, bitcoin::consensus::encode::Error> {
-        let height = u32::consensus_decode(&mut decoder)?;
-        let offset = u32::consensus_decode(&mut decoder)?;
-        let length = u32::consensus_decode(&mut decoder)?;
-
-        Ok(Self(height, offset, length))
+impl Encodable for TxMap {
+    fn consensus_encode<W: std::io::Write>(
+        &self,
+        mut e: W,
+    ) -> Result<usize, bitcoin::consensus::encode::Error> {
+        Ok(self.0.consensus_encode(&mut e)?
+            + self.1.consensus_encode(&mut e)?
+            + self.2.consensus_encode(&mut e)?)
     }
+}
 
-    fn encode(&self) -> Result<Vec<u8>, bitcoin::consensus::encode::Error> {
-        let mut encoder = Vec::with_capacity(12);
-        self.0.consensus_encode(&mut encoder)?;
-        self.1.consensus_encode(&mut encoder)?;
-        self.2.consensus_encode(&mut encoder)?;
-        Ok(encoder)
+impl Decodable for TxMap {
+    fn consensus_decode<D: std::io::Read>(
+        mut d: D,
+    ) -> Result<Self, bitcoin::consensus::encode::Error> {
+        let height = u32::consensus_decode(&mut d)?;
+        let offset = u32::consensus_decode(&mut d)?;
+        let length = u32::consensus_decode(&mut d)?;
+        Ok(TxMap(height, offset, length))
     }
 }
 
 pub const COL_TRANSACTION: &str = "T";
 
 impl DBKey for Txid {
-    fn encode(&self) -> Result<Vec<u8>, bitcoin::consensus::encode::Error> {
-        Ok(self.as_ref().into())
-    }
-
     fn col(&self) -> &'static str {
         COL_TRANSACTION
     }
@@ -79,12 +79,10 @@ impl TxIndexer {
         let mut offset = 80 + VarInt(block.txdata.len() as u64).len(); // header
         for tx in &block.txdata {
             let length = tx.get_size();
-            batch
-                .insert(
-                    tx.txid(),
-                    &TxMap(entry.height, offset as u32, length as u32),
-                )
-                .unwrap();
+            batch.insert(
+                tx.txid(),
+                &TxMap(entry.height, offset as u32, length as u32),
+            );
             offset += length;
         }
         self.db.write_batch(batch).unwrap();

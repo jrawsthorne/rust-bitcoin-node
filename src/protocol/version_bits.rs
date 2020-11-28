@@ -1,3 +1,5 @@
+use bitcoin::consensus::{encode, Decodable, Encodable};
+
 pub const VERSIONBITS_TOP_BITS: i32 = 0x20000000;
 pub const VERSIONBITS_TOP_MASK: i32 = -536870912;
 
@@ -165,5 +167,61 @@ impl BIP9Deployment {
             Timeout::NoTimeout => true,
             _ => false,
         }
+    }
+}
+
+impl Decodable for BIP9ThresholdState {
+    fn consensus_decode<D: std::io::Read>(d: D) -> Result<Self, encode::Error> {
+        let flag = u8::consensus_decode(d)?;
+        Ok(match flag {
+            0 => BIP9ThresholdState::Defined,
+            1 => BIP9ThresholdState::Started,
+            2 => BIP9ThresholdState::LockedIn,
+            3 => BIP9ThresholdState::Active,
+            4 => BIP9ThresholdState::Failed,
+            _ => unreachable!(),
+        })
+    }
+}
+
+impl Encodable for BIP9ThresholdState {
+    fn consensus_encode<W: std::io::Write>(&self, mut e: W) -> Result<usize, encode::Error> {
+        let flag: u8 = match self {
+            BIP9ThresholdState::Defined => 0,
+            BIP9ThresholdState::Started => 1,
+            BIP9ThresholdState::LockedIn => 2,
+            BIP9ThresholdState::Active => 3,
+            BIP9ThresholdState::Failed => 4,
+        };
+        flag.consensus_encode(&mut e)
+    }
+}
+
+impl Decodable for BIP8ThresholdState {
+    fn consensus_decode<D: std::io::Read>(d: D) -> Result<Self, encode::Error> {
+        let flag = u8::consensus_decode(d)?;
+        Ok(match flag {
+            0 => BIP8ThresholdState::Defined,
+            1 => BIP8ThresholdState::Started,
+            2 => BIP8ThresholdState::LockedIn,
+            3 => BIP8ThresholdState::Active,
+            4 => BIP8ThresholdState::Failing,
+            5 => BIP8ThresholdState::Failed,
+            _ => unreachable!(),
+        })
+    }
+}
+
+impl Encodable for BIP8ThresholdState {
+    fn consensus_encode<W: std::io::Write>(&self, mut e: W) -> Result<usize, encode::Error> {
+        let flag: u8 = match self {
+            BIP8ThresholdState::Defined => 0,
+            BIP8ThresholdState::Started => 1,
+            BIP8ThresholdState::LockedIn => 2,
+            BIP8ThresholdState::Active => 3,
+            BIP8ThresholdState::Failing => 4,
+            BIP8ThresholdState::Failed => 5,
+        };
+        flag.consensus_encode(&mut e)
     }
 }
