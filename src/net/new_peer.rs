@@ -329,10 +329,10 @@ impl Peer {
 
         self.queue_message(NetworkMessage::SendHeaders);
 
-        self.queue_message(NetworkMessage::SendCmpct(SendCmpct {
-            send_compact: true,
-            version: 2,
-        }));
+        // self.queue_message(NetworkMessage::SendCmpct(SendCmpct {
+        //     send_compact: true,
+        //     version: 2,
+        // }));
     }
 
     pub fn handle_send_cmpct(&self, send_cmpct: SendCmpct) {
