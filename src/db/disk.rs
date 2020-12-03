@@ -54,6 +54,8 @@ impl DiskDatabase {
             columns,
         };
 
+        db.compact();
+
         db
     }
 

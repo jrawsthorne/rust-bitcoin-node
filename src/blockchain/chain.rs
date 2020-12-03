@@ -592,6 +592,12 @@ impl Chain {
 
         self.notify_connect(&entry, block, &view);
 
+        let progress = if self.height < self.options.network.expected_tx_height {
+            (self.db.state.tx as f64 / self.options.network.expected_tx_count as f64) * 100.0
+        } else {
+            100.0
+        };
+
         info!(
             "Block {} ({}) added to chain (size={} txs={} time={}ms progress={:.2}%)",
             entry.hash,
@@ -599,7 +605,7 @@ impl Chain {
             block.get_size(),
             block.txdata.len(),
             ms_since(&start),
-            (self.db.state.tx as f64 / self.options.network.expected_tx_count as f64) * 100.0,
+            progress,
         );
 
         Ok(entry)
