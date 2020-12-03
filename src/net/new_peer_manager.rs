@@ -1,12 +1,19 @@
 use super::{
     connection::{DisconnectReceiver, MessageReceiver},
-    new_peer::Peer,
+    new_peer::{Peer, TxRelay},
+    peer_manager::GenericTxid,
 };
-use crate::{blockchain::Chain, protocol::NetworkParams, util, ChainEntry};
+use crate::{
+    blockchain::Chain,
+    mempool::{MemPool, MempoolError},
+    protocol::NetworkParams,
+    util, ChainEntry,
+};
 use anyhow::{anyhow, bail, Result};
 use bitcoin::{
+    hashes::sha256d,
     network::{message::NetworkMessage, message_blockdata::Inventory},
-    Block, BlockHash, BlockHeader,
+    Block, BlockHash, BlockHeader, Transaction,
 };
 use log::{debug, info, trace, warn};
 use parking_lot::{Mutex, RwLock};
@@ -29,14 +36,16 @@ pub struct PeerManager {
     state: Mutex<State>,
     chain: RwLock<Chain>,
     resolve_headers: Notify,
-    add_blocks_tx: Mutex<mpsc::Sender<AddBlocksEvent>>,
+    add_blocks_tx: Mutex<mpsc::Sender<AddEvent>>,
+    mempool: Option<Arc<RwLock<MemPool>>>,
 }
 #[derive(Debug, Default)]
 pub struct State {
     peers: HashMap<SocketAddr, Arc<Peer>>,
     header_sync_peer: Option<Arc<Peer>>,
     requested_blocks: HashMap<BlockHash, SocketAddr>,
-    verifying: HashSet<BlockHash>,
+    requested_transactions: HashSet<GenericTxid>,
+    verifying: HashSet<sha256d::Hash>,
 }
 
 impl State {
@@ -73,6 +82,7 @@ impl PeerManager {
         max_outbound: usize,
         network_params: NetworkParams,
         chain: RwLock<Chain>,
+        mempool: Option<Arc<RwLock<MemPool>>>,
     ) -> Arc<Self> {
         let (add_blocks_tx, add_blocks_rx) = mpsc::channel();
 
@@ -83,6 +93,7 @@ impl PeerManager {
             chain,
             resolve_headers: Notify::new(),
             add_blocks_tx: Mutex::new(add_blocks_tx),
+            mempool,
         });
 
         tokio::spawn(maintain_peers(peer_manager.clone()));
@@ -90,7 +101,7 @@ impl PeerManager {
         tokio::spawn(disconnect_stalling_peers(peer_manager.clone()));
         {
             let peer_manager = peer_manager.clone();
-            std::thread::spawn(move || add_blocks(peer_manager, add_blocks_rx));
+            std::thread::spawn(move || add(peer_manager, add_blocks_rx));
         }
 
         peer_manager
@@ -316,7 +327,7 @@ impl PeerManager {
                         continue;
                     }
 
-                    if state.verifying.contains(&entry.hash) {
+                    if state.verifying.contains(&entry.hash.as_hash()) {
                         continue;
                     }
 
@@ -373,7 +384,7 @@ impl PeerManager {
         let (tx, rx) = oneshot::channel();
         self.add_blocks_tx
             .lock()
-            .send(AddBlocksEvent::Attach(entry, tx))
+            .send(AddEvent::Attach(entry, tx))
             .expect("thread panicked");
         rx.await.expect("thread panicked");
     }
@@ -392,7 +403,7 @@ impl PeerManager {
         let chain = self.chain.read();
 
         for hash in hashes {
-            if state.verifying.contains(&hash)
+            if state.verifying.contains(&hash.as_hash())
                 || state.requested_blocks.contains_key(&hash)
                 || chain.db.has_block(hash)
             {
@@ -460,6 +471,8 @@ impl PeerManager {
         match message {
             NetworkMessage::Headers(headers) => self.handle_headers(peer, headers)?,
             NetworkMessage::Block(block) => self.handle_block(peer, block).await?,
+            NetworkMessage::Tx(tx) => self.handle_tx(peer, tx).await?,
+            NetworkMessage::Inv(items) => self.handle_inv(peer, items).await?,
             _ => {}
         }
 
@@ -516,6 +529,7 @@ impl PeerManager {
                 .chain
                 .read()
                 .get_locator(Some(headers[headers.len() - 1].block_hash()));
+            // TODO: Fix DOS issue
             peer.get_headers(locator, None);
         }
 
@@ -544,22 +558,102 @@ impl PeerManager {
             peer_state.stalling_since = None;
 
             assert!(
-                state.verifying.insert(hash),
+                state.verifying.insert(hash.as_hash()),
                 "FIX: requested duplicate blocks"
             );
         }
 
-        let (tx, rx) = oneshot::channel::<Result<ChainEntry>>();
+        let (tx, rx) = oneshot::channel();
         let _ = self
             .add_blocks_tx
             .lock()
-            .send(AddBlocksEvent::AddBlock(block, tx));
+            .send(AddEvent::AddBlock(block, tx));
         rx.await.unwrap()?;
 
-        self.state.lock().verifying.remove(&hash);
+        self.state.lock().verifying.remove(&hash.as_hash());
 
         self.queue_resolve_headers();
 
+        Ok(())
+    }
+
+    pub async fn handle_tx<'a>(&self, peer: PeerRef<'a>, tx: Transaction) -> Result<()> {
+        let gtxid = {
+            let mut state = self.state.lock();
+            let mut peer_state = peer.state.lock();
+
+            let gtxid = match peer_state.tx_relay {
+                TxRelay::Txid => tx.txid().into(),
+                TxRelay::Wtxid => tx.wtxid().into(),
+            };
+
+            if !peer_state.requested_transactions.remove(&gtxid) {
+                bail!("unrequested transaction");
+            }
+
+            state.requested_transactions.remove(&gtxid);
+
+            state.verifying.insert(gtxid.hash);
+
+            gtxid
+        };
+
+        let (sender, rx) = oneshot::channel();
+        let _ = self
+            .add_blocks_tx
+            .lock()
+            .send(AddEvent::AddTransaction(tx, sender));
+        if let Err(error) = rx.await.unwrap() {
+            warn!("{} couldn't be added to mempool: {}", gtxid, error);
+        }
+
+        Ok(())
+    }
+
+    pub async fn handle_inv<'a>(&self, peer: PeerRef<'a>, items: Vec<Inventory>) -> Result<()> {
+        if !self.chain.read().synced() {
+            return Ok(());
+        }
+
+        let mut gtxids = vec![];
+        let requested_transactions_len;
+
+        {
+            let mut state = self.state.lock();
+            let mut peer_state = peer.state.lock();
+
+            for item in items {
+                let gtxid = match item {
+                    Inventory::Transaction(txid) => Some(txid.into()),
+                    Inventory::WTx(wtxid) => Some(wtxid.into()),
+                    _ => None,
+                };
+                if let Some(gtxid) = gtxid {
+                    if state.requested_transactions.contains(&gtxid)
+                        || state.verifying.contains(&gtxid.hash)
+                    {
+                        continue;
+                    }
+
+                    state.requested_transactions.insert(gtxid);
+                    peer_state.requested_transactions.insert(gtxid);
+
+                    gtxids.push(gtxid);
+                }
+            }
+
+            requested_transactions_len = state.requested_transactions.len();
+        }
+
+        if !gtxids.is_empty() {
+            debug!(
+                "Requesting {}/{} txs from peer with getdata ({}).",
+                gtxids.len(),
+                requested_transactions_len,
+                peer.addr
+            );
+            peer.get_transactions(gtxids).await;
+        }
         Ok(())
     }
 }
@@ -741,16 +835,20 @@ async fn disconnect_stalling_peers(peer_manager: Arc<PeerManager>) {
     }
 }
 
-enum AddBlocksEvent {
+enum AddEvent {
     AddBlock(Block, oneshot::Sender<Result<ChainEntry>>),
     Attach(ChainEntry, oneshot::Sender<()>),
+    AddTransaction(
+        Transaction,
+        oneshot::Sender<std::result::Result<(), MempoolError>>,
+    ),
 }
 
-fn add_blocks(peer_manager: Arc<PeerManager>, rx: mpsc::Receiver<AddBlocksEvent>) {
+fn add(peer_manager: Arc<PeerManager>, rx: mpsc::Receiver<AddEvent>) {
     loop {
         while let Ok(event) = rx.recv() {
             match event {
-                AddBlocksEvent::AddBlock(block, tx) => {
+                AddEvent::AddBlock(block, tx) => {
                     let mut chain = peer_manager.chain.write();
 
                     let res = chain
@@ -759,11 +857,20 @@ fn add_blocks(peer_manager: Arc<PeerManager>, rx: mpsc::Receiver<AddBlocksEvent>
 
                     let _ = tx.send(res);
                 }
-                AddBlocksEvent::Attach(entry, tx) => {
+                AddEvent::Attach(entry, tx) => {
                     let mut chain = peer_manager.chain.write();
                     chain.attach(entry).expect("todo");
                     peer_manager.queue_resolve_headers();
                     let _ = tx.send(());
+                }
+                AddEvent::AddTransaction(transaction, tx) => {
+                    let mut res = Ok(());
+                    let chain = peer_manager.chain.read();
+                    if let Some(mempool) = &peer_manager.mempool {
+                        let mut mempool = mempool.write();
+                        res = mempool.add_tx(&chain, transaction);
+                    }
+                    let _ = tx.send(res);
                 }
             }
         }
@@ -794,7 +901,7 @@ mod test {
             .unwrap(),
         );
 
-        let peer_manager = PeerManager::new(8, network_params, chain);
+        let peer_manager = PeerManager::new(8, network_params, chain, None);
 
         sleep(Duration::from_secs(10)).await;
 

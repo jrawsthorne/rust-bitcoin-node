@@ -1,12 +1,15 @@
+use std::sync::Arc;
+
 use anyhow::Result;
 use bitcoin::Network;
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use rust_bitcoin_node::{
     blockchain::{Chain, ChainOptions},
+    mempool::MemPool,
     net::new_peer_manager::PeerManager,
     protocol::NetworkParams,
 };
-use tokio::signal::unix::{signal, SignalKind};
+use tokio::signal::ctrl_c;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -40,21 +43,20 @@ async fn main() -> Result<()> {
 
     let network_params = NetworkParams::from_network(Network::Bitcoin);
 
-    let chain = RwLock::new(
-        Chain::new(ChainOptions {
-            network: network_params.clone(),
-            verify_scripts: true,
-            path: "./data".into(),
-        })
-        .unwrap(),
-    );
-    let _peer_manager = PeerManager::new(8, network_params, chain);
+    let mut chain = Chain::new(ChainOptions {
+        network: network_params.clone(),
+        verify_scripts: true,
+        path: "./data".into(),
+    })
+    .unwrap();
 
-    signal(SignalKind::terminate())
-        .unwrap()
-        .recv()
-        .await
-        .unwrap();
+    let mempool = Arc::new(RwLock::new(MemPool::new()));
+
+    chain.add_listener(mempool.clone());
+
+    let _peer_manager = PeerManager::new(8, network_params, RwLock::new(chain), Some(mempool));
+
+    let _ = ctrl_c().await;
 
     Ok(())
 }

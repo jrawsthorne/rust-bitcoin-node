@@ -1,19 +1,25 @@
-use super::connection::{
-    create_connection, DisconnectReceiver, DisconnectSender, MessageReceiver, WriteHandle,
+use super::{
+    connection::{
+        create_connection, DisconnectReceiver, DisconnectSender, MessageReceiver, WriteHandle,
+    },
+    peer_manager::GenericTxid,
 };
 use crate::{protocol::WTXID_RELAY_VERSION, util::now};
 use anyhow::{bail, Result};
 use bitcoin::{
     network::message_blockdata::GetHeadersMessage,
     network::{
-        constants::ServiceFlags, message::NetworkMessage, message_compact_blocks::SendCmpct,
-        message_network::VersionMessage,
+        constants::ServiceFlags, message::NetworkMessage, message_blockdata::Inventory,
+        message_compact_blocks::SendCmpct, message_network::VersionMessage,
     },
-    BlockHash, Network,
+    BlockHash, Network, Txid, Wtxid,
 };
 use log::{debug, trace};
 use parking_lot::Mutex;
-use std::{collections::HashMap, net::SocketAddr};
+use std::{
+    collections::{HashMap, HashSet},
+    net::SocketAddr,
+};
 use tokio::net::TcpStream;
 
 pub struct Peer {
@@ -51,6 +57,7 @@ pub struct State {
     pub common_height: Option<u32>,
     pub common_hash: Option<BlockHash>,
     pub requested_blocks: HashMap<BlockHash, u64>,
+    pub requested_transactions: HashSet<GenericTxid>,
     pub stalling_since: Option<u64>, // TODO: Use time library for timestamps
     pub block_time: Option<u64>,
     pub syncing: bool,
@@ -103,6 +110,7 @@ impl Default for State {
             common_hash: None,
             common_height: None,
             requested_blocks: HashMap::new(),
+            requested_transactions: HashSet::new(),
             stalling_since: None,
             block_time: None,
             syncing: false,
@@ -224,6 +232,21 @@ impl Peer {
             locator,
             stop.unwrap_or(BlockHash::default()),
         )));
+    }
+
+    pub async fn get_transactions(&self, gtxids: Vec<GenericTxid>) {
+        let items = gtxids
+            .into_iter()
+            .map(|gtxid| {
+                if gtxid.wtxid {
+                    Inventory::WTx(Wtxid::from_hash(gtxid.hash))
+                } else {
+                    Inventory::WitnessTransaction(Txid::from_hash(gtxid.hash))
+                }
+            })
+            .collect();
+        self.queue_message_sync(NetworkMessage::GetData(items))
+            .await;
     }
 }
 
