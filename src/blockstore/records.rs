@@ -1,3 +1,5 @@
+use std::io;
+
 use bitcoin::consensus::{encode, Decodable, Encodable};
 
 #[derive(Debug, Clone, Copy)]
@@ -85,7 +87,7 @@ impl RecordType {
 }
 
 impl Encodable for FileRecord {
-    fn consensus_encode<W: std::io::Write>(&self, mut e: W) -> Result<usize, encode::Error> {
+    fn consensus_encode<W: std::io::Write>(&self, mut e: W) -> Result<usize, io::Error> {
         Ok(self.blocks.consensus_encode(&mut e)?
             + self.used.consensus_encode(&mut e)?
             + self.length.consensus_encode(&mut e)?)
@@ -106,7 +108,7 @@ impl Decodable for FileRecord {
 }
 
 impl Encodable for BlockRecord {
-    fn consensus_encode<W: std::io::Write>(&self, mut e: W) -> Result<usize, encode::Error> {
+    fn consensus_encode<W: std::io::Write>(&self, mut e: W) -> Result<usize, io::Error> {
         Ok(self.file.consensus_encode(&mut e)?
             + self.position.consensus_encode(&mut e)?
             + self.length.consensus_encode(&mut e)?)

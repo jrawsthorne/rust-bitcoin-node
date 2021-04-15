@@ -11,7 +11,10 @@ use bitcoin::{
     Block, BlockHash, OutPoint, Transaction, TxOut,
 };
 use log::info;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::{
+    collections::{HashMap, HashSet, VecDeque},
+    io,
+};
 
 #[derive(Default)]
 pub struct ChainEntryCache {
@@ -736,7 +739,7 @@ impl ChainState {
 }
 
 impl Encodable for ChainState {
-    fn consensus_encode<W: std::io::Write>(&self, mut e: W) -> Result<usize, encode::Error> {
+    fn consensus_encode<W: std::io::Write>(&self, mut e: W) -> Result<usize, io::Error> {
         Ok(self.tip.consensus_encode(&mut e)?
             + self.tx.consensus_encode(&mut e)?
             + self.coin.consensus_encode(&mut e)?
@@ -896,7 +899,7 @@ mod key {
     }
 
     impl Encodable for Key {
-        fn consensus_encode<W: std::io::Write>(&self, mut e: W) -> Result<usize, encode::Error> {
+        fn consensus_encode<W: std::io::Write>(&self, mut e: W) -> Result<usize, io::Error> {
             Ok(match self {
                 Key::Coin(outpoint) => {
                     outpoint.txid.consensus_encode(&mut e)?

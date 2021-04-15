@@ -1,3 +1,5 @@
+use std::io;
+
 use bitcoin::consensus::{encode, Decodable, Encodable};
 
 pub const VERSIONBITS_TOP_BITS: i32 = 0x20000000;
@@ -119,7 +121,7 @@ impl Decodable for ThresholdState {
 }
 
 impl Encodable for ThresholdState {
-    fn consensus_encode<W: std::io::Write>(&self, mut e: W) -> Result<usize, encode::Error> {
+    fn consensus_encode<W: std::io::Write>(&self, mut e: W) -> Result<usize, io::Error> {
         let flag: u8 = match self {
             ThresholdState::Defined => 0,
             ThresholdState::Started => 1,

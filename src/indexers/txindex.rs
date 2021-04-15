@@ -8,7 +8,7 @@ use bitcoin::{
     Block, Transaction, Txid, VarInt,
 };
 use parking_lot::RwLock;
-use std::{path::Path, sync::Arc};
+use std::{io, path::Path, sync::Arc};
 
 pub struct TxIndexer {
     db: DiskDatabase,
@@ -39,10 +39,7 @@ impl ChainListener for Arc<RwLock<TxIndexer>> {
 pub struct TxMap(u32, u32, u32);
 
 impl Encodable for TxMap {
-    fn consensus_encode<W: std::io::Write>(
-        &self,
-        mut e: W,
-    ) -> Result<usize, bitcoin::consensus::encode::Error> {
+    fn consensus_encode<W: io::Write>(&self, mut e: W) -> Result<usize, io::Error> {
         Ok(self.0.consensus_encode(&mut e)?
             + self.1.consensus_encode(&mut e)?
             + self.2.consensus_encode(&mut e)?)

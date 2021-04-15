@@ -398,6 +398,7 @@ impl PeerManager {
                     }
                 }
                 Inventory::Error => {}
+                Inventory::Unknown { .. } => {}
                 Inventory::Transaction(_) => {}
                 Inventory::FilteredBlock(_) => {}
                 Inventory::Block(_) => {}
@@ -819,7 +820,7 @@ impl PeerManager {
                     | Inventory::CompactBlock(hash)
                     | Inventory::WitnessBlock(hash)
                     | Inventory::WitnessFilteredBlock(hash) => hash.as_hash(),
-                    Inventory::Error => continue,
+                    Inventory::Error | Inventory::Unknown { .. } => continue,
                     Inventory::WTx(_) => todo!("wtxid transaction requesting"),
                 };
                 warn!(
@@ -911,7 +912,12 @@ impl PeerManager {
         peer: PeerRef,
         request: BlockTransactionsRequest,
     ) -> Result<()> {
-        let block = self.chain.read().db.get_block(request.block_hash).unwrap();
+        let block = self
+            .chain
+            .read()
+            .db
+            .get_block(BlockHash::from_hash(request.block_hash))
+            .unwrap();
         if let Some(block) = block {
             if let Ok(transactions) = BlockTransactions::from_request(&request, &block) {
                 peer.send(NetworkMessage::BlockTxn(BlockTxn { transactions }))?;
@@ -1009,7 +1015,7 @@ impl PeerManager {
                         transactions,
                     },
             }) => {
-                self.handle_block_txn(peer, transactions, block_hash)?;
+                self.handle_block_txn(peer, transactions, BlockHash::from_hash(block_hash))?;
             }
 
             NetworkMessage::SendHeaders => {}
@@ -1030,6 +1036,7 @@ impl PeerManager {
             NetworkMessage::WtxidRelay => {}
             NetworkMessage::AddrV2(_) => {}
             NetworkMessage::SendAddrV2 => {}
+            NetworkMessage::Unknown { .. } => {}
         }
 
         Ok(())
@@ -1038,7 +1045,7 @@ impl PeerManager {
 
 fn resolve_item(state: &mut State, peer_state: &mut peer::State, item: &Inventory) -> bool {
     match item {
-        Inventory::Error => false,
+        Inventory::Error | Inventory::Unknown { .. } => false,
         &Inventory::Transaction(txid) | &Inventory::WitnessTransaction(txid) => {
             resolve_tx(state, peer_state, &txid.into())
         }

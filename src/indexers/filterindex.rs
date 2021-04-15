@@ -12,7 +12,7 @@ use bitcoin::{
 };
 use log::info;
 use parking_lot::RwLock;
-use std::{path::Path, sync::Arc};
+use std::{io, path::Path, sync::Arc};
 
 pub const COL_FILTER: &str = "F";
 pub const COL_FILTER_HASH: &str = "H";
@@ -43,10 +43,7 @@ impl DBKey for Key {
 }
 
 impl Encodable for Key {
-    fn consensus_encode<W: std::io::Write>(
-        &self,
-        mut e: W,
-    ) -> Result<usize, bitcoin::consensus::encode::Error> {
+    fn consensus_encode<W: std::io::Write>(&self, mut e: W) -> Result<usize, io::Error> {
         Ok(match self {
             Key::Filter(height) | Key::FilterHash(height) | Key::FilterHeader(height) => {
                 height.consensus_encode(&mut e)?
@@ -140,7 +137,7 @@ impl FilterIndexer {
         let scripts_for_coin = |outpoint: &OutPoint| {
             view.map
                 .get(outpoint)
-                .map(|coin| coin.output.script_pubkey.clone()) // TODO: Create PR for rust-bitcoin to return reference
+                .map(|coin| &coin.output.script_pubkey) // TODO: Create PR for rust-bitcoin to return reference
                 .ok_or_else(|| bip158::Error::UtxoMissing(*outpoint))
         };
 

@@ -1,3 +1,5 @@
+use std::io;
+
 use crate::{CoinEntry, CoinView};
 use bitcoin::{
     consensus::{encode, Decodable, Encodable},
@@ -26,7 +28,7 @@ impl UndoCoins {
 }
 
 impl Encodable for UndoCoins {
-    fn consensus_encode<W: std::io::Write>(&self, mut e: W) -> Result<usize, encode::Error> {
+    fn consensus_encode<W: std::io::Write>(&self, mut e: W) -> Result<usize, io::Error> {
         let mut len = 0;
         len += (self.items.len() as u32).consensus_encode(&mut e)?;
         for coin in &self.items {

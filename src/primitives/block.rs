@@ -24,7 +24,8 @@ impl BlockExt for Block {
     fn validate_pow(&self) -> Result<(), BlockHeaderVerificationError> {
         self.header
             .validate_pow(&self.header.target())
-            .map_err(|_| BlockHeaderVerificationError::InvalidPOW)
+            .map_err(|_| BlockHeaderVerificationError::InvalidPOW)?;
+        Ok(())
     }
 
     fn check_body(&self) -> Result<(), BlockVerificationError> {

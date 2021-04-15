@@ -1,3 +1,5 @@
+use std::io;
+
 use bitcoin::{
     blockdata::transaction::{Transaction, TxOut},
     consensus::{encode, Decodable, Encodable},
@@ -49,7 +51,7 @@ impl CoinEntry {
 pub static MAX_HEIGHT: u32 = u32::max_value();
 
 impl Encodable for CoinEntry {
-    fn consensus_encode<W: std::io::Write>(&self, mut e: W) -> Result<usize, encode::Error> {
+    fn consensus_encode<W: std::io::Write>(&self, mut e: W) -> Result<usize, io::Error> {
         let mut len = 0;
         len += self.version.consensus_encode(&mut e)?;
         len += match self.height {

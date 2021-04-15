@@ -10,7 +10,13 @@ use bitcoin::{
     Address, AddressType, Block, Network, Txid, VarInt,
 };
 use parking_lot::RwLock;
-use std::{collections::HashSet, convert::TryInto, io::Cursor, path::Path, sync::Arc};
+use std::{
+    collections::HashSet,
+    convert::TryInto,
+    io::{self, Cursor},
+    path::Path,
+    sync::Arc,
+};
 
 pub struct AddrIndexer {
     db: DiskDatabase,
@@ -52,7 +58,7 @@ impl DBKey for Key {
 }
 
 impl Encodable for Key {
-    fn consensus_encode<W: std::io::Write>(&self, mut e: W) -> Result<usize, encode::Error> {
+    fn consensus_encode<W: std::io::Write>(&self, mut e: W) -> Result<usize, io::Error> {
         let mut len = 0;
         let addr = match self {
             Key::TxidByHeightAndIndex(height, index) => {

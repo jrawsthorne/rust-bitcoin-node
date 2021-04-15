@@ -133,7 +133,7 @@ impl CompactBlock {
             })
             .collect();
         BlockTransactionsRequest {
-            block_hash: self.header.block_hash(),
+            block_hash: self.header.block_hash().as_hash(),
             indexes,
         }
     }

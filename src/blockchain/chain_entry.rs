@@ -1,3 +1,5 @@
+use std::io;
+
 use crate::protocol::{VERSIONBITS_TOP_BITS, VERSIONBITS_TOP_MASK};
 use bitcoin::{
     consensus::encode, consensus::Decodable, consensus::Encodable, util::uint::Uint256, Block,
@@ -76,7 +78,7 @@ impl From<&ChainEntry> for BlockHeader {
 }
 
 impl Encodable for ChainEntry {
-    fn consensus_encode<W: std::io::Write>(&self, mut e: W) -> Result<usize, encode::Error> {
+    fn consensus_encode<W: std::io::Write>(&self, mut e: W) -> Result<usize, io::Error> {
         Ok(self.hash.consensus_encode(&mut e)?
             + self.version.consensus_encode(&mut e)?
             + self.prev_block.consensus_encode(&mut e)?
