@@ -10,7 +10,7 @@ pub const VERSIONBITS_NUM_BITS: usize = 29;
 // In case of reorg, transitions can go backward. Without transition, state is
 // inherited between periods. All blocks of a period share the same state.
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub enum BIP9ThresholdState {
+pub enum ThresholdState {
     // First state that each softfork starts out as. The genesis block is by definition in this state for each deployment.
     Defined,
     // For blocks past the starttime.
@@ -23,96 +23,41 @@ pub enum BIP9ThresholdState {
     Failed,
 }
 
-#[derive(Debug, Copy, Clone)]
-pub enum Deployment {
-    BIP8(BIP8Deployment),
-    BIP9(BIP9Deployment),
-}
-
 impl Deployment {
     pub fn bit(&self) -> u8 {
-        match self {
-            Deployment::BIP8(deployment) => deployment.bit,
-            Deployment::BIP9(deployment) => deployment.bit,
-        }
+        self.bit
     }
-}
-
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub enum ThresholdState {
-    BIP8(BIP8ThresholdState),
-    BIP9(BIP9ThresholdState),
 }
 
 impl ThresholdState {
     pub fn is_active(&self) -> bool {
-        match self {
-            ThresholdState::BIP8(state) => *state == BIP8ThresholdState::Active,
-            ThresholdState::BIP9(state) => *state == BIP9ThresholdState::Active,
-        }
+        matches!(self, ThresholdState::Active)
     }
 
     pub fn is_defined(&self) -> bool {
-        match self {
-            ThresholdState::BIP8(state) => *state == BIP8ThresholdState::Defined,
-            ThresholdState::BIP9(state) => *state == BIP9ThresholdState::Defined,
-        }
+        matches!(self, ThresholdState::Defined)
     }
 
     pub fn is_started(&self) -> bool {
-        match self {
-            ThresholdState::BIP8(state) => *state == BIP8ThresholdState::Started,
-            ThresholdState::BIP9(state) => *state == BIP9ThresholdState::Started,
-        }
+        matches!(self, ThresholdState::Started)
     }
 
     pub fn is_locked_in(&self) -> bool {
-        match self {
-            ThresholdState::BIP8(state) => *state == BIP8ThresholdState::LockedIn,
-            ThresholdState::BIP9(state) => *state == BIP9ThresholdState::LockedIn,
-        }
-    }
-
-    pub fn is_failing(&self) -> bool {
-        match self {
-            ThresholdState::BIP8(state) => *state == BIP8ThresholdState::Failing,
-            ThresholdState::BIP9(_state) => false,
-        }
+        matches!(self, ThresholdState::LockedIn)
     }
 
     pub fn is_failed(&self) -> bool {
-        match self {
-            ThresholdState::BIP8(state) => *state == BIP8ThresholdState::Failed,
-            ThresholdState::BIP9(state) => *state == BIP9ThresholdState::Failed,
-        }
+        matches!(self, ThresholdState::Failed)
     }
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub enum BIP8ThresholdState {
-    Defined,
-    Started,
-    LockedIn,
-    Active,
-    Failing,
-    Failed,
-}
-
 #[derive(Debug, Copy, Clone)]
-pub struct BIP8Deployment {
-    pub name: &'static str,
-    pub bit: u8,
-    pub start_height: u32,
-    pub timeout_height: u32,
-    pub lock_in_on_timeout: bool,
-}
-
-#[derive(Debug, Copy, Clone)]
-pub struct BIP9Deployment {
+pub struct Deployment {
     pub bit: u8,
     pub start_time: StartTime,
     pub timeout: Timeout,
     pub name: &'static str,
+    pub min_activation_height: u32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -127,31 +72,20 @@ pub enum Timeout {
     Timeout(u32),
 }
 
-impl BIP8Deployment {
+impl Deployment {
     pub fn new(
         name: &'static str,
         bit: u8,
-        start_height: u32,
-        timeout_height: u32,
-        lock_in_on_timeout: bool,
+        start_time: StartTime,
+        timeout: Timeout,
+        min_activation_height: u32,
     ) -> Self {
-        Self {
-            bit,
-            start_height,
-            timeout_height,
-            name,
-            lock_in_on_timeout,
-        }
-    }
-}
-
-impl BIP9Deployment {
-    pub fn new(name: &'static str, bit: u8, start_time: StartTime, timeout: Timeout) -> Self {
         Self {
             bit,
             start_time,
             timeout,
             name,
+            min_activation_height,
         }
     }
 
@@ -170,57 +104,28 @@ impl BIP9Deployment {
     }
 }
 
-impl Decodable for BIP9ThresholdState {
+impl Decodable for ThresholdState {
     fn consensus_decode<D: std::io::Read>(d: D) -> Result<Self, encode::Error> {
         let flag = u8::consensus_decode(d)?;
         Ok(match flag {
-            0 => BIP9ThresholdState::Defined,
-            1 => BIP9ThresholdState::Started,
-            2 => BIP9ThresholdState::LockedIn,
-            3 => BIP9ThresholdState::Active,
-            4 => BIP9ThresholdState::Failed,
+            0 => ThresholdState::Defined,
+            1 => ThresholdState::Started,
+            2 => ThresholdState::LockedIn,
+            3 => ThresholdState::Active,
+            4 => ThresholdState::Failed,
             _ => unreachable!(),
         })
     }
 }
 
-impl Encodable for BIP9ThresholdState {
+impl Encodable for ThresholdState {
     fn consensus_encode<W: std::io::Write>(&self, mut e: W) -> Result<usize, encode::Error> {
         let flag: u8 = match self {
-            BIP9ThresholdState::Defined => 0,
-            BIP9ThresholdState::Started => 1,
-            BIP9ThresholdState::LockedIn => 2,
-            BIP9ThresholdState::Active => 3,
-            BIP9ThresholdState::Failed => 4,
-        };
-        flag.consensus_encode(&mut e)
-    }
-}
-
-impl Decodable for BIP8ThresholdState {
-    fn consensus_decode<D: std::io::Read>(d: D) -> Result<Self, encode::Error> {
-        let flag = u8::consensus_decode(d)?;
-        Ok(match flag {
-            0 => BIP8ThresholdState::Defined,
-            1 => BIP8ThresholdState::Started,
-            2 => BIP8ThresholdState::LockedIn,
-            3 => BIP8ThresholdState::Active,
-            4 => BIP8ThresholdState::Failing,
-            5 => BIP8ThresholdState::Failed,
-            _ => unreachable!(),
-        })
-    }
-}
-
-impl Encodable for BIP8ThresholdState {
-    fn consensus_encode<W: std::io::Write>(&self, mut e: W) -> Result<usize, encode::Error> {
-        let flag: u8 = match self {
-            BIP8ThresholdState::Defined => 0,
-            BIP8ThresholdState::Started => 1,
-            BIP8ThresholdState::LockedIn => 2,
-            BIP8ThresholdState::Active => 3,
-            BIP8ThresholdState::Failing => 4,
-            BIP8ThresholdState::Failed => 5,
+            ThresholdState::Defined => 0,
+            ThresholdState::Started => 1,
+            ThresholdState::LockedIn => 2,
+            ThresholdState::Active => 3,
+            ThresholdState::Failed => 4,
         };
         flag.consensus_encode(&mut e)
     }

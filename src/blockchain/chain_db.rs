@@ -3,9 +3,7 @@ use crate::blockstore::{BlockStore, BlockStoreOptions};
 use crate::coins::{CoinEntry, CoinView, UndoCoins};
 use crate::db::{Batch, DBKey, Database, DiskDatabase, Iter, IterMode};
 use crate::error::DBError;
-use crate::protocol::{
-    BIP8ThresholdState, BIP9ThresholdState, Deployment, NetworkParams, ThresholdState,
-};
+use crate::protocol::{NetworkParams, ThresholdState};
 use bitcoin::{consensus::encode, Amount};
 use bitcoin::{
     consensus::{encode::deserialize, Decodable, Encodable, WriteExt},
@@ -169,26 +167,15 @@ impl ChainDB {
     fn get_version_bits_cache(&self) -> Result<VersionBitsCache, DBError> {
         let mut cache = VersionBitsCache::new(&self.network_params);
 
-        let bip9_items = self
+        let items = self
             .db
-            .iter_cf::<Key, BIP9ThresholdState>(COL_VERSION_BIT_STATE, IterMode::Start)?;
+            .iter_cf::<Key, ThresholdState>(COL_VERSION_BIT_STATE, IterMode::Start)?;
 
-        let bip8_items = self
-            .db
-            .iter_cf::<Key, BIP8ThresholdState>(COL_BIP8_VERSION_BIT_STATE, IterMode::Start)?;
-
-        for (key, state) in bip9_items {
+        for (key, state) in items {
             let mut decoder = std::io::Cursor::new(key);
             let bit = u8::consensus_decode(&mut decoder)?;
             let hash = BlockHash::consensus_decode(&mut decoder)?;
-            cache.insert9(&bit, hash, state);
-        }
-
-        for (key, state) in bip8_items {
-            let mut decoder = std::io::Cursor::new(key);
-            let bit = u8::consensus_decode(&mut decoder)?;
-            let hash = BlockHash::consensus_decode(&mut decoder)?;
-            cache.insert8(&bit, hash, state);
+            cache.insert(&bit, hash, state);
         }
 
         Ok(cache)
@@ -204,14 +191,7 @@ impl ChainDB {
         info!("Saving {} state cache updates.", updates.len());
 
         for update in updates {
-            match update.state {
-                ThresholdState::BIP8(state) => {
-                    batch.insert(Key::BIP8VersionBitsState(update.bit, update.hash), &state);
-                }
-                ThresholdState::BIP9(state) => {
-                    batch.insert(Key::VersionBitState(update.bit, update.hash), &state);
-                }
-            }
+            batch.insert(Key::VersionBitState(update.bit, update.hash), &update.state);
         }
     }
 
@@ -782,8 +762,7 @@ impl Decodable for ChainState {
 
 #[derive(Default, Debug)]
 pub struct VersionBitsCache {
-    bits8: HashMap<u8, HashMap<BlockHash, BIP8ThresholdState>>,
-    bits9: HashMap<u8, HashMap<BlockHash, BIP9ThresholdState>>,
+    bits: HashMap<u8, HashMap<BlockHash, ThresholdState>>,
     updates: Vec<VersionBitsCacheUpdate>,
 }
 
@@ -791,62 +770,29 @@ impl VersionBitsCache {
     pub fn new(network: &NetworkParams) -> VersionBitsCache {
         let mut cache = VersionBitsCache::default();
         for (_, deployment) in network.deployments.iter() {
-            match deployment {
-                Deployment::BIP8(d) => {
-                    assert!(!cache.bits8.contains_key(&d.bit));
-                    cache.bits8.insert(d.bit, HashMap::new());
-                }
-                Deployment::BIP9(d) => {
-                    assert!(!cache.bits9.contains_key(&d.bit));
-                    cache.bits9.insert(d.bit, HashMap::new());
-                }
-            };
+            assert!(!cache.bits.contains_key(&deployment.bit));
+            cache.bits.insert(deployment.bit, HashMap::new());
         }
         cache
     }
 
     pub fn set(&mut self, bit: u8, hash: BlockHash, state: ThresholdState) {
-        match state {
-            ThresholdState::BIP8(s) => {
-                let cache = self.cache8_mut(&bit);
+        let cache = self.cache_mut(&bit);
 
-                let insert = match cache.get(&hash) {
-                    None => true,
-                    Some(cached_state) => cached_state != &s,
-                };
+        let insert = match cache.get(&hash) {
+            None => true,
+            Some(cached_state) => cached_state != &state,
+        };
 
-                if insert {
-                    cache.insert(hash, s);
-                    self.updates
-                        .push(VersionBitsCacheUpdate::new(bit, hash, state));
-                }
-            }
-            ThresholdState::BIP9(s) => {
-                let cache = self.cache9_mut(&bit);
-
-                let insert = match cache.get(&hash) {
-                    None => true,
-                    Some(cached_state) => cached_state != &s,
-                };
-
-                if insert {
-                    cache.insert(hash, s);
-                    self.updates
-                        .push(VersionBitsCacheUpdate::new(bit, hash, state));
-                }
-            }
+        if insert {
+            cache.insert(hash, state);
+            self.updates
+                .push(VersionBitsCacheUpdate::new(bit, hash, state));
         }
     }
 
-    pub fn get_9(&self, bit: u8, hash: &BlockHash) -> Option<&BIP9ThresholdState> {
-        self.bits9
-            .get(&bit)
-            .expect("unknown deployment bit")
-            .get(hash)
-    }
-
-    pub fn get_8(&self, bit: u8, hash: &BlockHash) -> Option<&BIP8ThresholdState> {
-        self.bits8
+    pub fn get(&self, bit: u8, hash: &BlockHash) -> Option<&ThresholdState> {
+        self.bits
             .get(&bit)
             .expect("unknown deployment bit")
             .get(hash)
@@ -858,37 +804,19 @@ impl VersionBitsCache {
 
     pub fn drop(&mut self) {
         for update in self.updates.drain(..) {
-            match update.state {
-                ThresholdState::BIP8(_) => {
-                    self.bits8
-                        .get_mut(&update.bit)
-                        .expect("unknown deployment bit")
-                        .remove(&update.hash);
-                }
-                ThresholdState::BIP9(_) => {
-                    self.bits9
-                        .get_mut(&update.bit)
-                        .expect("unknown deployment bit")
-                        .remove(&update.hash);
-                }
-            }
+            self.bits
+                .get_mut(&update.bit)
+                .expect("unknown deployment bit")
+                .remove(&update.hash);
         }
     }
 
-    fn cache9_mut(&mut self, bit: &u8) -> &mut HashMap<BlockHash, BIP9ThresholdState> {
-        self.bits9.get_mut(bit).expect("unknown deployment bit")
+    fn cache_mut(&mut self, bit: &u8) -> &mut HashMap<BlockHash, ThresholdState> {
+        self.bits.get_mut(bit).expect("unknown deployment bit")
     }
 
-    fn cache8_mut(&mut self, bit: &u8) -> &mut HashMap<BlockHash, BIP8ThresholdState> {
-        self.bits8.get_mut(bit).expect("unknown deployment bit")
-    }
-
-    pub fn insert9(&mut self, bit: &u8, hash: BlockHash, state: BIP9ThresholdState) {
-        self.cache9_mut(bit).insert(hash, state);
-    }
-
-    pub fn insert8(&mut self, bit: &u8, hash: BlockHash, state: BIP8ThresholdState) {
-        self.cache8_mut(bit).insert(hash, state);
+    pub fn insert(&mut self, bit: &u8, hash: BlockHash, state: ThresholdState) {
+        self.cache_mut(bit).insert(hash, state);
     }
 }
 
@@ -922,7 +850,6 @@ mod key {
     pub const COL_MISC: &str = "M";
     pub const COL_SKIP: &str = "S";
     pub const COL_VERSION_BIT_STATE: &str = "V";
-    pub const COL_BIP8_VERSION_BIT_STATE: &str = "v";
 
     pub fn columns() -> Vec<&'static str> {
         vec![
@@ -936,7 +863,6 @@ mod key {
             COL_MISC,
             COL_SKIP,
             COL_VERSION_BIT_STATE,
-            COL_BIP8_VERSION_BIT_STATE,
         ]
     }
 
@@ -951,7 +877,6 @@ mod key {
         Tip,
         ChainWork(Uint256, BlockHash),
         VersionBitState(u8, BlockHash),
-        BIP8VersionBitsState(u8, BlockHash),
     }
 
     impl DBKey for Key {
@@ -966,7 +891,6 @@ mod key {
                 Key::ChainWork(_, _) => COL_CHAIN_WORK,
                 Key::NextHashes(_) => COL_NEXT_HASHES,
                 Key::VersionBitState(_, _) => COL_VERSION_BIT_STATE,
-                Key::BIP8VersionBitsState(_, _) => COL_BIP8_VERSION_BIT_STATE,
             }
         }
     }
@@ -994,7 +918,7 @@ mod key {
                 Key::ChainWork(work, hash) => {
                     work.consensus_encode(&mut e)? + hash.consensus_encode(&mut e)?
                 }
-                Key::VersionBitState(bit, hash) | Key::BIP8VersionBitsState(bit, hash) => {
+                Key::VersionBitState(bit, hash) => {
                     bit.consensus_encode(&mut e)? + hash.consensus_encode(&mut e)?
                 }
             })

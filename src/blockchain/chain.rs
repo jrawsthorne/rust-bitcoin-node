@@ -2,8 +2,7 @@ use super::{chain_db::get_skip_height, ChainDB, ChainDBOptions, ChainEntry};
 use crate::coins::CoinView;
 use crate::protocol::{
     consensus::{self, LockFlags, ScriptFlags},
-    BIP8Deployment, BIP8ThresholdState, BIP9Deployment, BIP9ThresholdState, Deployment,
-    NetworkParams, StartTime, ThresholdState, Timeout, VERSIONBITS_TOP_BITS,
+    Deployment, NetworkParams, StartTime, ThresholdState, Timeout, VERSIONBITS_TOP_BITS,
 };
 use crate::{
     error::{
@@ -864,7 +863,7 @@ impl Chain {
         let mut version = 0;
 
         for deployment in self.options.network.deployments.clone().values() {
-            let state = self.get_state(prev, *deployment);
+            let state = self.get_deployment_status(Some(prev), *deployment);
 
             if state.is_locked_in() || state.is_started() {
                 version |= 1 << deployment.bit();
@@ -877,139 +876,20 @@ impl Chain {
         version
     }
 
-    pub fn get_bip8_deployment_status(
+    pub fn get_deployment_status(
         &mut self,
-        mut prev: Option<ChainEntry>,
-        deployment: BIP8Deployment,
-    ) -> BIP8ThresholdState {
-        let bit = deployment.bit;
+        prev: Option<ChainEntry>,
+        deployment: Deployment,
+    ) -> ThresholdState {
+        let mut prev = match prev {
+            None => return ThresholdState::Defined,
+            Some(prev) => prev,
+        };
 
-        let start_height = deployment.start_height;
-        let timeout_height = deployment.timeout_height;
-        let lock_in_on_timeout = deployment.lock_in_on_timeout;
-        let threshold = self.options.network.rule_change_activation_threshold;
-        let window = self.options.network.miner_confirmation_window;
-
-        if let Some(entry) = prev {
-            let height = entry.height.checked_sub((entry.height + 1) % window);
-            if let Some(height) = height {
-                prev = Some(*self.db.get_ancestor(&entry, height));
-            } else {
-                prev = None;
-            }
-        }
-
-        let mut to_compute = vec![];
-        let mut prev_hash;
-
-        loop {
-            prev_hash = prev.map(|p| p.hash).unwrap_or_default();
-
-            // Already cached, don't need to compute any further back
-            if self.db.version_bits_cache.get_8(bit, &prev_hash).is_some() {
-                break;
-            }
-
-            match prev {
-                None => {
-                    self.db.version_bits_cache.set(
-                        bit,
-                        prev_hash,
-                        ThresholdState::BIP8(BIP8ThresholdState::Defined),
-                    );
-                    break;
-                }
-                Some(entry) => {
-                    if entry.height + 1 < start_height {
-                        self.db.version_bits_cache.set(
-                            bit,
-                            prev_hash,
-                            ThresholdState::BIP8(BIP8ThresholdState::Defined),
-                        );
-                        break;
-                    }
-                    to_compute.push(entry);
-                    if let Some(height) = entry.height.checked_sub(window) {
-                        prev = Some(*self.db.get_ancestor(&entry, height));
-                    } else {
-                        prev = None;
-                    }
-                }
-            }
-        }
-
-        let mut state = *self.db.version_bits_cache.get_8(bit, &prev_hash).unwrap();
-
-        for entry in to_compute {
-            let height = entry.height + 1;
-            match state {
-                BIP8ThresholdState::Defined => {
-                    if height >= start_height {
-                        state = BIP8ThresholdState::Started;
-                    }
-                }
-                BIP8ThresholdState::Started => {
-                    let mut block = entry;
-                    let mut count = 0;
-
-                    for _ in 0..window {
-                        if block.has_bit(bit) {
-                            count += 1;
-                        }
-                        block = *self
-                            .db
-                            .get_entry_by_hash(&block.prev_block)
-                            .expect("earlier block should exist");
-                    }
-
-                    if count >= threshold {
-                        state = BIP8ThresholdState::LockedIn;
-                    } else if height >= timeout_height {
-                        state = if lock_in_on_timeout {
-                            BIP8ThresholdState::LockedIn
-                        } else {
-                            BIP8ThresholdState::Failing
-                        };
-                    }
-                }
-                BIP8ThresholdState::Failing => {
-                    // Only if every block signals does this become ACTIVE
-                    state = BIP8ThresholdState::Active;
-                    let mut block = entry;
-                    for _ in 0..window {
-                        if !block.has_bit(bit) {
-                            state = BIP8ThresholdState::Failed;
-                            break;
-                        }
-                        block = *self
-                            .db
-                            .get_entry_by_hash(&block.prev_block)
-                            .expect("earlier block should exist");
-                    }
-                }
-                BIP8ThresholdState::LockedIn => {
-                    state = BIP8ThresholdState::Active;
-                }
-                BIP8ThresholdState::Active | BIP8ThresholdState::Failed => {}
-            }
-
-            self.db
-                .version_bits_cache
-                .set(bit, entry.hash, ThresholdState::BIP8(state));
-        }
-
-        state
-    }
-
-    fn get_bip9_deployment_status(
-        &mut self,
-        mut prev: ChainEntry,
-        deployment: BIP9Deployment,
-    ) -> BIP9ThresholdState {
         let bit = deployment.bit;
 
         let start_time = match deployment.start_time {
-            StartTime::AlwaysActive => return BIP9ThresholdState::Active,
+            StartTime::AlwaysActive => return ThresholdState::Active,
             StartTime::StartTime(start_time) => start_time,
         };
 
@@ -1026,26 +906,24 @@ impl Chain {
                 assert!(prev.height == height);
                 assert!(((prev.height + 1) % window) == 0);
             } else {
-                return BIP9ThresholdState::Defined;
+                return ThresholdState::Defined;
             }
         }
 
         let mut entry = prev;
-        let mut state = BIP9ThresholdState::Defined;
+        let mut state = ThresholdState::Defined;
 
         let mut compute = vec![];
 
         loop {
-            if let Some(cached) = self.db.version_bits_cache.get_9(bit, &entry.hash) {
+            if let Some(cached) = self.db.version_bits_cache.get(bit, &entry.hash) {
                 state = *cached;
                 break;
             }
             let time = self.get_median_time(&entry);
             if time < start_time {
-                state = BIP9ThresholdState::Defined;
-                self.db
-                    .version_bits_cache
-                    .set(bit, entry.hash, ThresholdState::BIP9(state));
+                state = ThresholdState::Defined;
+                self.db.version_bits_cache.set(bit, entry.hash, state);
                 break;
             }
             compute.push(entry);
@@ -1059,26 +937,26 @@ impl Chain {
 
         for entry in compute {
             match state {
-                BIP9ThresholdState::Defined => {
+                ThresholdState::Defined => {
                     let time = self.get_median_time(&entry);
 
                     match timeout {
                         Timeout::Timeout(timeout) if time >= timeout => {
-                            state = BIP9ThresholdState::Failed;
+                            state = ThresholdState::Failed;
                         }
                         _ => {
                             if time >= start_time {
-                                state = BIP9ThresholdState::Started;
+                                state = ThresholdState::Started;
                             }
                         }
                     }
                 }
-                BIP9ThresholdState::Started => {
+                ThresholdState::Started => {
                     let time = self.get_median_time(&entry);
 
                     match timeout {
                         Timeout::Timeout(timeout) if time >= timeout => {
-                            state = BIP9ThresholdState::Failed;
+                            state = ThresholdState::Failed;
                         }
                         _ => {
                             let mut block = entry;
@@ -1088,7 +966,7 @@ impl Chain {
                                     count += 1;
                                 }
                                 if count >= threshold {
-                                    state = BIP9ThresholdState::LockedIn;
+                                    state = ThresholdState::LockedIn;
                                     break;
                                 }
                                 block = *self
@@ -1099,27 +977,19 @@ impl Chain {
                         }
                     }
                 }
-                BIP9ThresholdState::LockedIn => state = BIP9ThresholdState::Active,
-                BIP9ThresholdState::Failed | BIP9ThresholdState::Active => (),
+                ThresholdState::LockedIn => {
+                    if entry.height < deployment.min_activation_height {
+                        continue;
+                    }
+                    state = ThresholdState::Active
+                }
+                ThresholdState::Failed | ThresholdState::Active => (),
             }
 
-            self.db
-                .version_bits_cache
-                .set(bit, entry.hash, ThresholdState::BIP9(state));
+            self.db.version_bits_cache.set(bit, entry.hash, state);
         }
 
         state
-    }
-
-    pub fn get_state(&mut self, prev: ChainEntry, deployment: Deployment) -> ThresholdState {
-        match deployment {
-            Deployment::BIP8(deployment) => {
-                ThresholdState::BIP8(self.get_bip8_deployment_status(Some(prev), deployment))
-            }
-            Deployment::BIP9(deployment) => {
-                ThresholdState::BIP9(self.get_bip9_deployment_status(prev, deployment))
-            }
-        }
     }
 
     pub fn get_deployment_state(&mut self) -> DeploymentState {
@@ -1180,16 +1050,7 @@ impl Chain {
     }
 
     fn is_deployment_active(&mut self, prev: ChainEntry, deployment: Deployment) -> bool {
-        match deployment {
-            Deployment::BIP8(deployment) => {
-                let status = self.get_bip8_deployment_status(Some(prev), deployment);
-                status == BIP8ThresholdState::Active
-            }
-            Deployment::BIP9(deployment) => {
-                let status = self.get_bip9_deployment_status(prev, deployment);
-                status == BIP9ThresholdState::Active
-            }
-        }
+        self.get_deployment_status(Some(prev), deployment) == ThresholdState::Active
     }
 
     pub fn verify_locks(
