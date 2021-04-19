@@ -5,7 +5,7 @@ use crate::{
 };
 use bitcoin::{
     consensus::serialize,
-    consensus::{encode, Decodable, Encodable, WriteExt},
+    consensus::{Decodable, Encodable, WriteExt},
     util::address::Payload,
     Address, AddressType, Block, Network, Txid, VarInt,
 };

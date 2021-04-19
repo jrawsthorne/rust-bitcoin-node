@@ -44,15 +44,35 @@ pub enum IterDirection {
 
 impl DiskDatabase {
     pub fn new(path: impl AsRef<Path>, columns: Vec<&'static str>) -> Self {
+        let mut columns_to_open: Vec<String> = columns.iter().map(|col| col.to_string()).collect();
+
         let mut db_options = Options::default();
         db_options.create_if_missing(true);
         db_options.create_missing_column_families(true);
         db_options.increase_parallelism(4);
 
-        let db = Self {
-            db: DB::open_cf(&db_options, path, &columns).unwrap(),
+        // Collect any existing columns that are no longer used
+        let mut cfs_to_drop = vec![];
+        for cf in DB::list_cf(&db_options, &path).unwrap() {
+            if cf != "default" && !columns_to_open.contains(&cf) {
+                cfs_to_drop.push(cf);
+            }
+        }
+
+        // Extend the list of columns to open with old columns
+        for cf in &cfs_to_drop {
+            columns_to_open.push(cf.clone());
+        }
+
+        let mut db = Self {
+            db: DB::open_cf(&db_options, path, &columns_to_open).unwrap(),
             columns,
         };
+
+        // Drop old columns
+        for cf in &cfs_to_drop {
+            db.db.drop_cf(cf).unwrap();
+        }
 
         db.compact();
 
@@ -67,7 +87,7 @@ impl DiskDatabase {
         }
     }
 
-    fn col(&self, col: &'static str) -> &ColumnFamily {
+    fn col(&self, col: &str) -> &ColumnFamily {
         self.db.cf_handle(col).expect("column doesn't exist")
     }
 

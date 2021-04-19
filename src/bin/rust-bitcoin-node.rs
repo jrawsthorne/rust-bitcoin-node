@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use bitcoin::Network;
-use parking_lot::{Mutex, RwLock};
+use parking_lot::RwLock;
 use rust_bitcoin_node::{
     blockchain::{Chain, ChainOptions},
     mempool::MemPool,

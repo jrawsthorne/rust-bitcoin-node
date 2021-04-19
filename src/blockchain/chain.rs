@@ -80,6 +80,7 @@ impl Chain {
 
         info!("Chain Height: {}", chain.tip.height);
 
+        // Calculate deployment state for every adjustment period back to genesis
         chain.state = chain.get_deployment_state();
 
         Ok(chain)
@@ -142,10 +143,6 @@ impl Chain {
 
         if !self.state.has_taproot() && state.has_taproot() {
             info!("Taproot has been activated");
-        }
-
-        if !self.state.has_ctv() && state.has_ctv() {
-            info!("CTV has been activated");
         }
 
         self.state = state;
@@ -1006,7 +1003,6 @@ impl Chain {
     fn get_deployments(&mut self, time: u32, prev: ChainEntry) -> DeploymentState {
         let deployments = &self.options.network.deployments;
         let taproot = deployments["taproot"];
-        let ctv = deployments["ctv"];
 
         let height = prev.height + 1;
         let mut state = DeploymentState::default();
@@ -1040,10 +1036,6 @@ impl Chain {
 
         if self.is_deployment_active(prev, taproot) {
             state.script_flags |= ScriptFlags::VERIFY_TAPROOT;
-        }
-
-        if self.is_deployment_active(prev, ctv) {
-            state.script_flags |= ScriptFlags::VERIFY_STANDARD_TEMPLATE;
         }
 
         state
@@ -1209,11 +1201,6 @@ impl DeploymentState {
 
     pub fn has_witness(&self) -> bool {
         self.script_flags.contains(ScriptFlags::VERIFY_WITNESS)
-    }
-
-    pub fn has_ctv(&self) -> bool {
-        self.script_flags
-            .contains(ScriptFlags::VERIFY_STANDARD_TEMPLATE)
     }
 
     pub fn has_taproot(&self) -> bool {

@@ -136,8 +136,6 @@ impl ChainDB {
     pub fn open(&mut self) -> Result<(), DBError> {
         match self.get_state()? {
             Some(state) => {
-                self.version_bits_cache = self.get_version_bits_cache()?;
-
                 self.state = state;
                 info!("ChainDB successfully loaded.");
             }
@@ -165,37 +163,6 @@ impl ChainDB {
         );
 
         Ok(())
-    }
-
-    fn get_version_bits_cache(&self) -> Result<VersionBitsCache, DBError> {
-        let mut cache = VersionBitsCache::new(&self.network_params);
-
-        let items = self
-            .db
-            .iter_cf::<Key, ThresholdState>(COL_VERSION_BIT_STATE, IterMode::Start)?;
-
-        for (key, state) in items {
-            let mut decoder = std::io::Cursor::new(key);
-            let bit = u8::consensus_decode(&mut decoder)?;
-            let hash = BlockHash::consensus_decode(&mut decoder)?;
-            cache.insert(&bit, hash, state);
-        }
-
-        Ok(cache)
-    }
-
-    fn save_version_bits_cache(&mut self, batch: &mut Batch<Key>) {
-        let updates = &self.version_bits_cache.updates;
-
-        if updates.is_empty() {
-            return;
-        }
-
-        info!("Saving {} state cache updates.", updates.len());
-
-        for update in updates {
-            batch.insert(Key::VersionBitState(update.bit, update.hash), &update.state);
-        }
     }
 
     pub fn write_block(&mut self, block: &Block) -> Result<(), DBError> {
@@ -283,9 +250,6 @@ impl ChainDB {
             // Hash -> Entry
             self.entry_cache.insert_hash_batch(entry);
 
-            // update version bits cache
-            self.save_version_bits_cache(&mut batch);
-
             // Connect block and save coins.
             self.connect_block(&mut batch, entry, block, view)?;
 
@@ -310,8 +274,6 @@ impl ChainDB {
 
             batch.remove(Key::Hash(entry.height));
             self.entry_cache.remove_height_batch(&entry);
-
-            self.save_version_bits_cache(&mut batch);
 
             let view = self.disconnect_block(&mut batch, entry, block)?;
 
@@ -655,8 +617,6 @@ impl ChainDB {
             nexts.push(hash);
             batch.insert(Key::NextHashes(prev.hash), &nexts);
 
-            self.save_version_bits_cache(&mut batch);
-
             Ok(())
         };
         if let Err(err) = save_entry() {
@@ -841,7 +801,7 @@ use key::*;
 mod key {
     use super::*;
     use crate::db::{KEY_CHAIN_STATE, KEY_TIP};
-    use bitcoin::consensus::{encode, Encodable};
+    use bitcoin::consensus::Encodable;
 
     pub const COL_ENTRY: &str = "E";
     pub const COL_HEIGHT: &str = "H";
@@ -852,7 +812,6 @@ mod key {
     pub const COL_NEXT_HASHES: &str = "n";
     pub const COL_MISC: &str = "M";
     pub const COL_SKIP: &str = "S";
-    pub const COL_VERSION_BIT_STATE: &str = "V";
 
     pub fn columns() -> Vec<&'static str> {
         vec![
@@ -865,7 +824,6 @@ mod key {
             COL_NEXT_HASHES,
             COL_MISC,
             COL_SKIP,
-            COL_VERSION_BIT_STATE,
         ]
     }
 
@@ -879,7 +837,6 @@ mod key {
         ChainState,
         Tip,
         ChainWork(Uint256, BlockHash),
-        VersionBitState(u8, BlockHash),
     }
 
     impl DBKey for Key {
@@ -893,7 +850,6 @@ mod key {
                 Key::ChainState | Key::Tip => COL_MISC,
                 Key::ChainWork(_, _) => COL_CHAIN_WORK,
                 Key::NextHashes(_) => COL_NEXT_HASHES,
-                Key::VersionBitState(_, _) => COL_VERSION_BIT_STATE,
             }
         }
     }
@@ -920,9 +876,6 @@ mod key {
                 }
                 Key::ChainWork(work, hash) => {
                     work.consensus_encode(&mut e)? + hash.consensus_encode(&mut e)?
-                }
-                Key::VersionBitState(bit, hash) => {
-                    bit.consensus_encode(&mut e)? + hash.consensus_encode(&mut e)?
                 }
             })
         }
