@@ -83,7 +83,7 @@ impl DiskDatabase {
         for column in &self.columns {
             let col = self.col(column);
             self.db
-                .compact_range_cf::<Vec<u8>, Vec<u8>>(col, None, None);
+                .compact_range_cf(col, Option::<Vec<u8>>::None, Option::<Vec<u8>>::None);
         }
     }
 

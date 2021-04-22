@@ -9,8 +9,8 @@ use bytes::{Buf, BytesMut};
 use log::trace;
 use std::net::SocketAddr;
 use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
-    prelude::*,
     sync::{
         mpsc::{self, UnboundedSender},
         oneshot,

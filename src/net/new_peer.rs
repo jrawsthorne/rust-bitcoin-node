@@ -432,7 +432,8 @@ mod test {
         peer.disconnect(Err(error.clone().into()));
 
         let received_error: CustomError = disconnect_rx
-            .try_recv()
+            .recv()
+            .await
             .unwrap()
             .unwrap_err()
             .downcast()
