@@ -192,7 +192,7 @@ impl MemPool {
 
         tx.check_inputs(view, height)?;
 
-        let flags = ScriptFlags::STANDARD_VERIFY_FLAGS;
+        let flags = chain.state.script_flags;
         tx.verify_scripts(view, &flags)?;
 
         Ok(())
