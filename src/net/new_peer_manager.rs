@@ -57,7 +57,7 @@ impl State {
     }
 
     pub fn new_header_sync_peer(&mut self) -> Option<Arc<Peer>> {
-        if self.peers.is_empty() {
+        if !self.peers.is_empty() {
             let mut peers: Vec<&Arc<Peer>> = self.peers.values().collect();
 
             let mut rng = rand::thread_rng();
