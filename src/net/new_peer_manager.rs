@@ -880,6 +880,7 @@ fn add(peer_manager: Arc<PeerManager>, rx: mpsc::Receiver<AddEvent>) {
 #[cfg(test)]
 mod test {
     use bitcoin::Network;
+    use tempfile::TempDir;
     use tokio::task::yield_now;
 
     use crate::blockchain::ChainOptions;
@@ -888,32 +889,42 @@ mod test {
 
     #[tokio::test]
     async fn test_disconnect() {
-        env_logger::builder().format_timestamp_millis().init();
+        env_logger::builder()
+            .format_timestamp_millis()
+            .is_test(true)
+            .init();
 
         let network_params = NetworkParams::from_network(Network::Bitcoin);
+
+        let tmp_dir = TempDir::new().unwrap();
 
         let chain = RwLock::new(
             Chain::new(ChainOptions {
                 network: network_params.clone(),
                 verify_scripts: true,
-                path: "./data".into(),
+                path: tmp_dir.path().into(),
             })
             .unwrap(),
         );
 
         let peer_manager = PeerManager::new(8, network_params, chain, None);
 
-        sleep(Duration::from_secs(10)).await;
-
         let mut addrs = vec![];
 
-        {
-            let state = peer_manager.state.lock();
+        loop {
+            {
+                let state = peer_manager.state.lock();
 
-            for peer in state.peers.values() {
-                addrs.push(peer.addr);
-                peer.disconnect(Ok(()));
+                if state.peers.len() == 8 {
+                    for peer in state.peers.values() {
+                        addrs.push(peer.addr);
+                        peer.disconnect(Ok(()));
+                    }
+                    break;
+                }
             }
+
+            yield_now().await;
         }
 
         loop {

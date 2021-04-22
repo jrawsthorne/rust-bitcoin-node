@@ -17,10 +17,10 @@ fn chain(path: PathBuf) -> Chain {
 }
 
 fn init_logger() {
-    let _ = env_logger::builder()
+    env_logger::builder()
         .format_timestamp_millis()
         .is_test(true)
-        .try_init();
+        .init();
 }
 
 #[test]
