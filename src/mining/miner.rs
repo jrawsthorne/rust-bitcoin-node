@@ -1,11 +1,13 @@
 use super::BlockTemplate;
-use crate::blockchain::{Chain, ChainEntry};
+use crate::{
+    blockchain::{Chain, ChainEntry},
+    util::now,
+};
 
 use bitcoin::{
     util::hash::bitcoin_merkle_root, Address, Block, BlockHeader, Network, PublicKey, Transaction,
 };
 use log::debug;
-use std::time::UNIX_EPOCH;
 
 pub struct Miner {
     network: Network,
@@ -35,10 +37,7 @@ impl Miner {
             Some(address) => address,
             None => self.get_address(),
         };
-        let time = std::cmp::max(
-            UNIX_EPOCH.elapsed().unwrap().as_secs() as u32,
-            chain.get_median_time(&tip) + 1,
-        );
+        let time = std::cmp::max(now() as u32, chain.get_median_time(&tip) + 1);
         let target = chain.get_target(time, Some(&tip));
 
         let attempt = BlockTemplate::new(tip.height + 1, address, tip.hash, version, time, target);
