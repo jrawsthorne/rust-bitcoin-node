@@ -975,10 +975,9 @@ impl Chain {
                     }
                 }
                 ThresholdState::LockedIn => {
-                    if entry.height < deployment.min_activation_height {
-                        continue;
+                    if entry.height >= deployment.min_activation_height {
+                        state = ThresholdState::Active
                     }
-                    state = ThresholdState::Active
                 }
                 ThresholdState::Failed | ThresholdState::Active => (),
             }
