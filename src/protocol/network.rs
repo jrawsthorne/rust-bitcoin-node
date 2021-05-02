@@ -105,7 +105,7 @@ impl NetworkParams {
                     "taproot"   => Deployment::new("taproot", 2, StartTime::StartTime(1619222400), Timeout::Timeout(1628640000), 709_632),
                     "dummy"     => Deployment::new("dummy", 28, StartTime::StartTime(1199145601), Timeout::Timeout(1230767999), 0)
                 },
-                rule_change_activation_threshold,
+                rule_change_activation_threshold: 1815,
                 miner_confirmation_window,
                 bip30: hashmap! {
                     91842 => b("00000000000a4d0a398161ffc163c503763b1f4360639393e0e4c8e300e0caec"),
@@ -172,7 +172,11 @@ impl NetworkParams {
                     "ctv"       => Deployment::new("ctv", 5, StartTime::AlwaysActive, Timeout::NoTimeout, 0),
                     "dummy"     => Deployment::new("dummy", 28, StartTime::StartTime(0), Timeout::NoTimeout, 0)
                 },
-                rule_change_activation_threshold,
+                rule_change_activation_threshold: if matches!(network, Network::Signet) {
+                    1815
+                } else {
+                    rule_change_activation_threshold
+                },
                 miner_confirmation_window,
                 bip30: Default::default(),
                 expected_tx_count: 0,
