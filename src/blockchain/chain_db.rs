@@ -194,11 +194,11 @@ impl ChainDB {
         Ok(())
     }
 
-    fn get_most_work_entry(&self) -> Result<Option<ChainEntry>, DBError> {
+    pub fn get_most_work_entry(&self) -> Result<Option<ChainEntry>, DBError> {
         Ok(self
             .get_tip_entries()?
-            .next()
-            .and_then(|(_, entry)| Some(entry)))
+            .max_by(|(_, x), (_, y)| x.chainwork.cmp(&y.chainwork))
+            .map(|(_, e)| e))
     }
 
     fn get_tip_entries(&self) -> Result<Iter<ChainEntry>, DBError> {

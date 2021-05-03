@@ -85,6 +85,41 @@ fn speedy_trial_activation(
 }
 
 #[test]
+fn test_get_most_work_entry() {
+    init_logger();
+    mock::set_time(1296688602);
+    let tmp_dir = TempDir::new().unwrap();
+    let mut chain = chain(tmp_dir.path().into());
+    let miner = Miner::new();
+
+    // 1 block reorg
+
+    let tip1 = chain.tip.clone();
+    let tip2 = chain.tip.clone();
+
+    let template1 = miner.create_block(tip1, None, &mut chain);
+    let template2 = miner.create_block(tip2, None, &mut chain);
+
+    let block1 = Miner::mine_block(template1, vec![]);
+    let block2 = Miner::mine_block(template2, vec![]);
+
+    let tip2 = chain.add(block1).unwrap();
+
+    assert_eq!(chain.db.get_most_work_entry().unwrap().unwrap(), tip2);
+
+    let tip3 = chain.add(block2).unwrap();
+
+    // build on top of block 2
+    let template3 = miner.create_block(tip3, None, &mut chain);
+    let block3 = Miner::mine_block(template3, vec![]);
+
+    // disconnect block 1, connect block 2 and 3
+    let tip4 = chain.add(block3).unwrap();
+
+    assert_eq!(chain.db.get_most_work_entry().unwrap().unwrap(), tip4);
+}
+
+#[test]
 fn test_speedy_trial_activation() {
     init_logger();
 
