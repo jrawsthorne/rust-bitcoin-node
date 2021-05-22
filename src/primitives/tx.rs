@@ -1,7 +1,11 @@
 use super::ScriptExt;
 use crate::protocol::consensus::{self, ScriptFlags};
 use crate::{error::TransactionVerificationError, CoinView};
-use bitcoin::{blockdata::constants::*, consensus::Encodable, Transaction, VarInt};
+use bitcoin::{
+    blockdata::constants::*,
+    consensus::{serialize, Encodable},
+    Transaction, TxOut, VarInt,
+};
 use consensus::*;
 use rayon::prelude::*;
 use std::collections::HashSet;
@@ -36,6 +40,14 @@ impl TransactionExt for Transaction {
         flags: &ScriptFlags,
     ) -> Result<(), TransactionVerificationError> {
         let mut spending_transaction = Vec::with_capacity(self.get_size());
+        // TODO: Impl Encodable for Vec<&TxOut> to remove clone
+        let spent_outputs = serialize(
+            &(self
+                .input
+                .iter()
+                .map(|input| view.map[&input.previous_output].output.clone())
+                .collect::<Vec<TxOut>>()),
+        );
         self.consensus_encode(&mut spending_transaction).unwrap();
         self.input
             .par_iter()
@@ -48,6 +60,7 @@ impl TransactionExt for Transaction {
                     spent_output,
                     amount,
                     &spending_transaction,
+                    Some(&spent_outputs),
                     input_index,
                     flags.bits(),
                 )
