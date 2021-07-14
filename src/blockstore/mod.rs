@@ -13,9 +13,15 @@ use bitcoin::{
     consensus::serialize,
     consensus::{deserialize, Decodable, Encodable},
     hashes::Hash,
-    BlockHash, Network,
+    Block, BlockHash, Network, Transaction,
 };
 use db::COL_BLOCK_RECORD;
+
+pub trait BlockStorage {
+    fn write_block(&mut self, hash: BlockHash, block: &Block);
+    fn write_undo(&mut self, hash: BlockHash, undo: &UndoCoins);
+    fn read_undo(&self, hash: BlockHash) -> Result<Option<Vec<u8>>, DBError>;
+}
 
 use log::{debug, info};
 use regex::Regex;
@@ -31,10 +37,12 @@ pub struct BlockStore {
 
 impl BlockStore {
     pub fn new(options: BlockStoreOptions) -> Self {
-        Self {
+        let mut block_store = Self {
             db: DiskDatabase::new(options.index_location.clone(), db::columns()),
             options,
-        }
+        };
+        block_store.open().unwrap();
+        block_store
     }
 
     pub fn downloaded_set(&self) -> HashSet<BlockHash> {
@@ -76,10 +84,9 @@ impl BlockStore {
         let regexp = regex::Regex::new(&format!("^{}(\\d{{5}})\\.dat$", record_type.prefix()))
             .expect("record check regex fail");
 
-        let mut entries = fs::read_dir("./")?;
         let mut filenos = vec![];
 
-        while let Some(entry) = entries.next() {
+        for entry in fs::read_dir(&self.options.location)? {
             let entry = entry.map_err(|_| DBError::Other("read dir error"))?;
             let file_name = entry.file_name();
 
@@ -103,9 +110,7 @@ impl BlockStore {
         Ok((missing, filenos))
     }
 
-    fn _index(&mut self, record_type: RecordType) -> Result<(), DBError> {
-        use std::io::Seek as SSeek;
-
+    fn index(&mut self, record_type: RecordType) -> Result<(), DBError> {
         let (missing, filenos) = self.check(record_type)?;
 
         if !missing {
@@ -126,7 +131,9 @@ impl BlockStore {
             while reader.position() < ((data.len() - 4) as u64) {
                 let magic = u32::consensus_decode(&mut reader).expect("Bad magic");
                 if magic != self.options.network.magic() {
-                    SSeek::seek(&mut reader, SeekFrom::Current(-3)).expect("couldn't seek back 3");
+                    reader
+                        .seek(SeekFrom::Current(-3))
+                        .expect("couldn't seek back 3");
                     continue;
                 }
 
@@ -181,9 +188,9 @@ impl BlockStore {
         Ok(())
     }
 
-    fn index(&mut self) -> Result<(), DBError> {
-        self._index(RecordType::Block)?;
-        self._index(RecordType::Undo)
+    fn index_all_types(&mut self) -> Result<(), DBError> {
+        self.index(RecordType::Block)?;
+        self.index(RecordType::Undo)
     }
 
     fn ensure(&self) -> Result<(), DBError> {
@@ -192,11 +199,11 @@ impl BlockStore {
         Ok(())
     }
 
-    pub fn open(&mut self) -> Result<(), DBError> {
+    fn open(&mut self) -> Result<(), DBError> {
         info!("Opening FileBlockStore...");
         self.ensure()?;
         // self.db.verify();
-        self.index()
+        self.index_all_types()
     }
 
     pub fn filepath(&self, record_type: RecordType, file_no: u32) -> PathBuf {
@@ -243,8 +250,8 @@ impl BlockStore {
         Ok((fileno, filerecord, filepath))
     }
 
-    pub fn write(&mut self, hash: BlockHash, data: &[u8]) -> Result<(), DBError> {
-        self._write(RecordType::Block, hash, data)
+    pub fn write_block(&mut self, hash: BlockHash, block: &Block) -> Result<(), DBError> {
+        self._write(RecordType::Block, hash, &serialize(&block))
     }
 
     pub fn write_undo(&mut self, hash: BlockHash, undo: &UndoCoins) -> Result<(), DBError> {
@@ -309,20 +316,47 @@ impl BlockStore {
         Ok(())
     }
 
-    pub fn read(
+    pub fn read_transaction(
         &self,
-        hash: BlockHash,
+        block_hash: BlockHash,
         offset: u32,
-        length: Option<u32>,
-    ) -> Result<Option<Vec<u8>>, DBError> {
-        self._read(RecordType::Block, hash, offset, length)
+        length: u32,
+    ) -> Result<Option<Transaction>, DBError> {
+        let raw = self.read(RecordType::Block, block_hash, offset, Some(length))?;
+        if let Some(raw) = raw {
+            Ok(Some(deserialize(&raw).map_err(|_| {
+                DBError::Other("Couldn't deserialize transaction")
+            })?))
+        } else {
+            Ok(None)
+        }
     }
 
-    pub fn read_undo(&self, hash: BlockHash) -> Result<Option<Vec<u8>>, DBError> {
-        self._read(RecordType::Undo, hash, 0, None)
+    pub fn read_block(&self, hash: BlockHash) -> Result<Option<Block>, DBError> {
+        let raw = self.read(RecordType::Block, hash, 0, None)?;
+        if let Some(raw) = raw {
+            Ok(Some(deserialize(&raw).map_err(|_| {
+                DBError::Other("Couldn't deserialize block")
+            })?))
+        } else {
+            Ok(None)
+        }
     }
 
-    fn _read(
+    pub fn read_raw_block(&self, hash: BlockHash) -> Result<Option<Vec<u8>>, DBError> {
+        self.read(RecordType::Block, hash, 0, None)
+    }
+
+    pub fn read_undo(&self, hash: BlockHash) -> Result<Option<UndoCoins>, DBError> {
+        let bytes = self.read(RecordType::Undo, hash, 0, None)?;
+        if let Some(bytes) = bytes {
+            Ok(Some(UndoCoins::consensus_decode(&bytes[..])?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn read(
         &self,
         record_type: RecordType,
         hash: BlockHash,
@@ -418,6 +452,41 @@ impl BlockStoreOptions {
             location: location.clone(),
             max_file_length: 128 * 1024 * 1024,
             index_location: { location.join("./index") },
+        }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use bitcoin::blockdata::constants::genesis_block;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_reindex() {
+        env_logger::builder()
+            .format_timestamp_millis()
+            .is_test(true)
+            .init();
+        let tmpdir = TempDir::new().unwrap();
+        info!("Create blockstore");
+        {
+            let mut store =
+                BlockStore::new(BlockStoreOptions::new(Network::Bitcoin, tmpdir.path()));
+            let block = genesis_block(Network::Bitcoin);
+            store.write_block(block.block_hash(), &block).unwrap();
+        }
+        info!("Delete database index");
+        fs::remove_dir_all(tmpdir.path().join("index")).unwrap();
+        info!("Reopen block store");
+        {
+            let store = BlockStore::new(BlockStoreOptions::new(Network::Bitcoin, tmpdir.path()));
+            let expected_block = genesis_block(Network::Bitcoin);
+            info!("Fetch expected block from store");
+            assert_eq!(
+                store.read_block(expected_block.block_hash()).unwrap(),
+                Some(expected_block)
+            )
         }
     }
 }

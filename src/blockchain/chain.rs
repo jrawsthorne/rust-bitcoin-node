@@ -205,7 +205,7 @@ impl Chain {
             return Err(err);
         }
 
-        self.db.write_block(block).unwrap();
+        self.db.write_block(entry.hash, block).unwrap();
 
         if entry.chainwork <= self.tip.chainwork {
             warn!("Heads up: Competing chain at height {}: tip-height={} competitor-height={} tip-hash={} competitor-hash={} tip-chainwork={} competitor-chainwork={} chainwork-diff={}", entry.height, self.tip.height, entry.height, self.tip.hash, entry.hash, self.tip.chainwork, entry.chainwork, self.tip.chainwork - entry.chainwork);

@@ -95,13 +95,11 @@ impl TxIndexer {
 
     pub fn tx(&self, chain: &Chain, txid: Txid) -> Option<Transaction> {
         let TxMap(height, offset, length) = self.db.get(txid).unwrap()?;
-        let hash = chain.db.get_entry_by_height(height)?.hash;
-        let raw = chain
+        let block_hash = chain.db.get_entry_by_height(height)?.hash;
+        chain
             .db
             .blocks
-            .read(hash, offset, Some(length))
+            .read_transaction(block_hash, offset, length)
             .unwrap()
-            .unwrap();
-        Some(deserialize(&raw).unwrap())
     }
 }

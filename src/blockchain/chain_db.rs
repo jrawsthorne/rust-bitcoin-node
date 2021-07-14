@@ -165,11 +165,8 @@ impl ChainDB {
         Ok(())
     }
 
-    pub fn write_block(&mut self, block: &Block) -> Result<(), DBError> {
-        let hash = block.block_hash();
-        let mut b = Vec::with_capacity(block.get_size());
-        block.consensus_encode(&mut b).unwrap();
-        self.blocks.write(hash, &b)?;
+    pub fn write_block(&mut self, hash: BlockHash, block: &Block) -> Result<(), DBError> {
+        self.blocks.write_block(hash, block)?;
         self.downloaded.insert(hash);
         Ok(())
     }
@@ -185,7 +182,7 @@ impl ChainDB {
     }
 
     pub fn get_raw_block(&self, hash: BlockHash) -> Result<Option<Vec<u8>>, DBError> {
-        self.blocks.read(hash, 0, None)
+        self.blocks.read_raw_block(hash)
     }
 
     fn set_most_work(&mut self) -> Result<(), DBError> {
@@ -220,7 +217,7 @@ impl ChainDB {
         // Save the header entry.
         self.save_entry(entry, &ChainEntry::default())?;
 
-        self.write_block(&genesis)?;
+        self.write_block(entry.hash, &genesis)?;
 
         // Connect to the main chain.
         self.connect(entry, &genesis, &CoinView::default())?;
@@ -337,11 +334,7 @@ impl ChainDB {
     }
 
     fn get_undo_coins(&self, hash: BlockHash) -> Result<UndoCoins, DBError> {
-        Ok(self
-            .blocks
-            .read_undo(hash)?
-            .map(|bytes| UndoCoins::consensus_decode(&bytes[..]).unwrap())
-            .unwrap_or_default())
+        Ok(self.blocks.read_undo(hash)?.unwrap())
     }
 
     fn commit(&mut self, batch: Batch<Key>) -> Result<(), DBError> {
