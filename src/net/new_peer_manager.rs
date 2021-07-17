@@ -887,12 +887,13 @@ mod test {
 
     use super::*;
 
+    #[ignore]
     #[tokio::test]
     async fn test_disconnect() {
-        env_logger::builder()
+        let _ = env_logger::builder()
             .format_timestamp_millis()
             .is_test(true)
-            .init();
+            .try_init();
 
         let network_params = NetworkParams::from_network(Network::Bitcoin);
 

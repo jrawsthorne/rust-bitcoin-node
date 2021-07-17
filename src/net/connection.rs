@@ -172,12 +172,13 @@ mod test {
 
     use super::*;
 
+    #[ignore]
     #[tokio::test]
     async fn handshake_test() {
-        env_logger::builder()
+        let _ = env_logger::builder()
             .format_timestamp_millis()
             .is_test(true)
-            .init();
+            .try_init();
 
         let stream = TcpStream::connect("hetzner:18333").await.unwrap();
         let addr = stream.peer_addr().unwrap();
