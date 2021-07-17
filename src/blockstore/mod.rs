@@ -218,7 +218,7 @@ impl BlockStore {
         record_type: RecordType,
         length: usize,
     ) -> Result<(u32, FileRecord, PathBuf), DBError> {
-        if length > self.options.max_file_length {
+        if length > self.options.max_file_length as usize {
             panic!("Block length above max file length.")
         }
 
@@ -439,7 +439,7 @@ impl BlockStore {
 pub struct BlockStoreOptions {
     network: Network,
     location: PathBuf,
-    max_file_length: usize,
+    max_file_length: u32,
     index_location: PathBuf,
 }
 
@@ -451,7 +451,7 @@ impl BlockStoreOptions {
             network,
             location: location.clone(),
             max_file_length: 128 * 1024 * 1024,
-            index_location: { location.join("./index") },
+            index_location: location.join("./index"),
         }
     }
 }
@@ -462,12 +462,16 @@ mod test {
     use bitcoin::blockdata::constants::genesis_block;
     use tempfile::TempDir;
 
-    #[test]
-    fn test_reindex() {
-        env_logger::builder()
+    fn init_logger() {
+        let _ = env_logger::builder()
             .format_timestamp_millis()
             .is_test(true)
-            .init();
+            .try_init();
+    }
+
+    #[test]
+    fn test_reindex() {
+        init_logger();
         let tmpdir = TempDir::new().unwrap();
         info!("Create blockstore");
         {
@@ -488,5 +492,122 @@ mod test {
                 Some(expected_block)
             )
         }
+    }
+
+    #[test]
+    fn test_prune_block() {
+        init_logger();
+        let tmpdir = TempDir::new().unwrap();
+        let mut store = BlockStore::new(BlockStoreOptions::new(Network::Bitcoin, tmpdir.path()));
+        let block = genesis_block(Network::Bitcoin);
+        store.write_block(block.block_hash(), &block).unwrap();
+        assert!(store.has(block.block_hash()).unwrap());
+        assert!(tmpdir.path().join("blk00000.dat").exists());
+        store.prune(block.block_hash()).unwrap();
+        assert!(!store.has(block.block_hash()).unwrap());
+        assert!(!tmpdir.path().join("blk00000.dat").exists());
+    }
+
+    #[test]
+    fn test_prune_multiple_blocks() {
+        init_logger();
+        let tmpdir = TempDir::new().unwrap();
+        let mut store = BlockStore::new(BlockStoreOptions::new(Network::Bitcoin, tmpdir.path()));
+        let first_block = genesis_block(Network::Bitcoin);
+        let second_block = {
+            let mut block = first_block.clone();
+            block.header.nonce += 1;
+            block
+        };
+        store
+            .write_block(first_block.block_hash(), &first_block)
+            .unwrap();
+        store
+            .write_block(second_block.block_hash(), &second_block)
+            .unwrap();
+
+        assert!(store.has(first_block.block_hash()).unwrap());
+        assert!(store.has(second_block.block_hash()).unwrap());
+        assert!(tmpdir.path().join("blk00000.dat").exists());
+
+        assert!(store.prune(first_block.block_hash()).unwrap());
+
+        assert!(!store.has(first_block.block_hash()).unwrap());
+        assert!(store.has(second_block.block_hash()).unwrap());
+        assert!(tmpdir.path().join("blk00000.dat").exists());
+
+        assert!(store.prune(second_block.block_hash()).unwrap());
+
+        assert!(!store.has(second_block.block_hash()).unwrap());
+        assert!(!tmpdir.path().join("blk00000.dat").exists());
+    }
+
+    #[test]
+    fn test_prune_non_existent_block() {
+        init_logger();
+        let tmpdir = TempDir::new().unwrap();
+        let mut store = BlockStore::new(BlockStoreOptions::new(Network::Bitcoin, tmpdir.path()));
+        let hash = genesis_block(Network::Bitcoin).block_hash();
+        assert!(!store.prune(hash).unwrap());
+    }
+
+    #[test]
+    fn test_max_file_length() {
+        init_logger();
+        let tmpdir = TempDir::new().unwrap();
+        let mut options = BlockStoreOptions::new(Network::Bitcoin, tmpdir.path());
+
+        let mut block = genesis_block(Network::Bitcoin);
+        // on disk block size (account for 8 bytes of meta)
+        let block_length = block.get_size() as u32;
+        let block_length_with_meta = block_length + 8;
+
+        let max_file_length = 10 * block_length_with_meta;
+        options.max_file_length = max_file_length;
+        let mut store = BlockStore::new(options);
+
+        // write 10 blocks to first file
+        for i in 0..10 {
+            block.header.nonce = i;
+            store.write_block(block.block_hash(), &block).unwrap();
+            let file_record: FileRecord = store
+                .db
+                .get(Key::File(RecordType::Block, 0))
+                .unwrap()
+                .unwrap();
+            let block_record: BlockRecord = store
+                .db
+                .get(Key::BlockRecord(RecordType::Block, block.block_hash()))
+                .unwrap()
+                .unwrap();
+            assert_eq!(file_record.blocks, i + 1);
+            assert_eq!(file_record.used, (i + 1) * block_length_with_meta);
+            assert_eq!(file_record.length, max_file_length);
+
+            assert_eq!(block_record.file, 0);
+            assert_eq!(block_record.position, (i * block_length_with_meta) + 8);
+            assert_eq!(block_record.length, block_length);
+        }
+
+        // write one more block to second file
+        block.header.nonce = 10;
+        store.write_block(block.block_hash(), &block).unwrap();
+        let file_record: FileRecord = store
+            .db
+            .get(Key::File(RecordType::Block, 1))
+            .unwrap()
+            .unwrap();
+        let block_record: BlockRecord = store
+            .db
+            .get(Key::BlockRecord(RecordType::Block, block.block_hash()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(file_record.blocks, 1);
+        assert_eq!(file_record.used, block_length_with_meta);
+        assert_eq!(file_record.length, max_file_length);
+
+        assert_eq!(block_record.file, 1);
+        assert_eq!(block_record.position, 8);
+        assert_eq!(block_record.length, block_length);
     }
 }
