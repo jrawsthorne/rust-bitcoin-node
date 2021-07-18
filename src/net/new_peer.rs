@@ -168,6 +168,9 @@ impl Peer {
                         self.handle_wtxid_relay();
                     }
                 }
+                Some(NetworkMessage::SendAddrV2) => {
+                    self.handle_send_addr_v2();
+                }
                 _ => bail!("unexpected handshake message"),
             }
         }
@@ -254,8 +257,11 @@ impl Peer {
 impl Peer {
     pub fn handle_message(&self, message: &NetworkMessage) -> Result<()> {
         match message {
-            NetworkMessage::Version(_) | NetworkMessage::Verack | NetworkMessage::WtxidRelay => {
-                bail!("handshake message after handshake");
+            NetworkMessage::Version(_)
+            | NetworkMessage::Verack
+            | NetworkMessage::WtxidRelay
+            | NetworkMessage::SendAddrV2 => {
+                bail!("handshake message after handshake: {}", message.cmd());
             }
 
             NetworkMessage::SendHeaders => self.handle_send_headers(),
@@ -273,8 +279,6 @@ impl Peer {
             NetworkMessage::SendCmpct(send_cmpct) => self.handle_send_cmpct(send_cmpct.clone()),
 
             NetworkMessage::FeeFilter(_) => {}
-
-            NetworkMessage::SendAddrV2 => self.handle_send_addr_v2(),
 
             _ => {}
         }
@@ -312,9 +316,9 @@ impl Peer {
             self.queue_message(NetworkMessage::WtxidRelay);
         }
 
-        self.queue_message(NetworkMessage::Verack);
-
         self.queue_message(NetworkMessage::SendAddrV2);
+
+        self.queue_message(NetworkMessage::Verack);
 
         Ok(())
     }
