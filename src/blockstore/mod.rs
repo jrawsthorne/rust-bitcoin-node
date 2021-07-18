@@ -251,14 +251,14 @@ impl BlockStore {
     }
 
     pub fn write_block(&mut self, hash: BlockHash, block: &Block) -> Result<(), DBError> {
-        self._write(RecordType::Block, hash, &serialize(&block))
+        self.write(RecordType::Block, hash, &serialize(&block))
     }
 
     pub fn write_undo(&mut self, hash: BlockHash, undo: &UndoCoins) -> Result<(), DBError> {
-        self._write(RecordType::Undo, hash, &serialize(undo))
+        self.write(RecordType::Undo, hash, &serialize(undo))
     }
 
-    pub fn _write(
+    fn write(
         &mut self,
         record_type: RecordType,
         hash: BlockHash,
@@ -322,22 +322,18 @@ impl BlockStore {
         offset: u32,
         length: u32,
     ) -> Result<Option<Transaction>, DBError> {
-        let raw = self.read(RecordType::Block, block_hash, offset, Some(length))?;
-        if let Some(raw) = raw {
-            Ok(Some(deserialize(&raw).map_err(|_| {
-                DBError::Other("Couldn't deserialize transaction")
-            })?))
+        let bytes = self.read(RecordType::Block, block_hash, offset, Some(length))?;
+        if let Some(bytes) = bytes {
+            Ok(Some(Transaction::consensus_decode(&bytes[..])?))
         } else {
             Ok(None)
         }
     }
 
     pub fn read_block(&self, hash: BlockHash) -> Result<Option<Block>, DBError> {
-        let raw = self.read(RecordType::Block, hash, 0, None)?;
-        if let Some(raw) = raw {
-            Ok(Some(deserialize(&raw).map_err(|_| {
-                DBError::Other("Couldn't deserialize block")
-            })?))
+        let bytes = self.read(RecordType::Block, hash, 0, None)?;
+        if let Some(bytes) = bytes {
+            Ok(Some(Block::consensus_decode(&bytes[..])?))
         } else {
             Ok(None)
         }
@@ -368,28 +364,23 @@ impl BlockStore {
             None => return Ok(None),
         };
         let filepath = self.filepath(record_type, block_record.file);
-        let position = if offset > 0 {
-            block_record.position + offset
-        } else {
-            block_record.position
-        };
+        let position = block_record.position + offset;
         let length = match length {
-            None if offset > 0 => block_record.length - offset,
+            None if offset > 0 => block_record
+                .length
+                .checked_sub(offset)
+                .expect("Out of bounds read: offset > block length"),
             None => block_record.length,
             Some(length) => length,
         };
-        if offset + length > block_record.length {
-            panic!("Out of bounds read");
-        }
-
+        assert!(
+            offset + length <= block_record.length,
+            "Out of bounds read: end > block length"
+        );
         let mut data = vec![0; length as usize];
         let mut file = File::open(filepath)?;
         file.seek(SeekFrom::Start(position as u64))?;
         file.read_exact(&mut data)?;
-
-        // if bytes != length as usize {
-        //     panic!("Wrong number of bytes read {} vs {}", bytes, length);
-        // }
 
         Ok(Some(data))
     }
@@ -459,7 +450,7 @@ impl BlockStoreOptions {
 #[cfg(test)]
 mod test {
     use super::*;
-    use bitcoin::blockdata::constants::genesis_block;
+    use bitcoin::{blockdata::constants::genesis_block, BlockHeader, Script, VarInt};
     use tempfile::TempDir;
 
     fn init_logger() {
@@ -609,5 +600,142 @@ mod test {
         assert_eq!(block_record.file, 1);
         assert_eq!(block_record.position, 8);
         assert_eq!(block_record.length, block_length);
+    }
+
+    #[test]
+    #[should_panic(expected = "Out of bounds read: offset > block length")]
+    fn test_out_of_bounds_offset() {
+        init_logger();
+        let tmpdir = TempDir::new().unwrap();
+        let mut store = BlockStore::new(BlockStoreOptions::new(Network::Bitcoin, tmpdir.path()));
+        let block = genesis_block(Network::Bitcoin);
+        let block_size = block.get_size() as u32;
+        store.write_block(block.block_hash(), &block).unwrap();
+        // read with offset past end of block
+        store
+            .read(RecordType::Block, block.block_hash(), block_size + 1, None)
+            .unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "Out of bounds read: end > block length")]
+    fn test_out_of_bounds_length() {
+        init_logger();
+        let tmpdir = TempDir::new().unwrap();
+        let mut store = BlockStore::new(BlockStoreOptions::new(Network::Bitcoin, tmpdir.path()));
+        let block = genesis_block(Network::Bitcoin);
+        // on disk block size (account for 8 bytes of meta)
+        let block_size = block.get_size() as u32 + 8;
+        store.write_block(block.block_hash(), &block).unwrap();
+        // read with length past end of block
+        store
+            .read(
+                RecordType::Block,
+                block.block_hash(),
+                0,
+                Some(block_size + 1),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn test_read_offset() {
+        init_logger();
+        let tmpdir = TempDir::new().unwrap();
+        let mut store = BlockStore::new(BlockStoreOptions::new(Network::Bitcoin, tmpdir.path()));
+        let block = genesis_block(Network::Bitcoin);
+        store.write_block(block.block_hash(), &block).unwrap();
+        // the coinbase transaction is after the header (80 bytes) and varint for num of transactions (1 byte for 1 tx)
+        let coinbase_bytes = store
+            .read(RecordType::Block, block.block_hash(), 81, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(block.get_size() - 81, coinbase_bytes.len());
+        let coinbase = Transaction::consensus_decode(&coinbase_bytes[..]).unwrap();
+        assert_eq!(coinbase, block.txdata[0]);
+    }
+
+    #[test]
+    fn test_read_length() {
+        init_logger();
+        let tmpdir = TempDir::new().unwrap();
+        let mut store = BlockStore::new(BlockStoreOptions::new(Network::Bitcoin, tmpdir.path()));
+        let block = genesis_block(Network::Bitcoin);
+        store.write_block(block.block_hash(), &block).unwrap();
+        // the first 80 bytes of a block are the header
+        let header_bytes = store
+            .read(RecordType::Block, block.block_hash(), 0, Some(80))
+            .unwrap()
+            .unwrap();
+        assert_eq!(80, header_bytes.len());
+        let header = BlockHeader::consensus_decode(&header_bytes[..]).unwrap();
+        assert_eq!(header, block.header);
+    }
+
+    #[test]
+    fn test_read_offset_and_length() {
+        init_logger();
+        let tmpdir = TempDir::new().unwrap();
+        let mut store = BlockStore::new(BlockStoreOptions::new(Network::Bitcoin, tmpdir.path()));
+        let block = genesis_block(Network::Bitcoin);
+        store.write_block(block.block_hash(), &block).unwrap();
+        // script starts at block header + num txs varint len + version + num inputs varint len + outpoint
+        let script_start = 80 + 1 + 4 + 1 + 36;
+        // len of script bytes + 1 byte for script length varint
+        let script_length = {
+            let raw = block.txdata[0].input[0].script_sig.len();
+            raw + VarInt(raw as u64).len()
+        };
+        let script_bytes = store
+            .read(
+                RecordType::Block,
+                block.block_hash(),
+                script_start,
+                Some(script_length as u32),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(script_length, script_bytes.len());
+        let script = Script::consensus_decode(&script_bytes[..]).unwrap();
+        assert_eq!(script, block.txdata[0].input[0].script_sig);
+    }
+
+    #[test]
+    fn test_read_transaction() {
+        init_logger();
+        let tmpdir = TempDir::new().unwrap();
+        let mut store = BlockStore::new(BlockStoreOptions::new(Network::Bitcoin, tmpdir.path()));
+        let block = genesis_block(Network::Bitcoin);
+        store.write_block(block.block_hash(), &block).unwrap();
+        let transaction = store
+            .read_transaction(block.block_hash(), 81, block.txdata[0].get_size() as u32)
+            .unwrap()
+            .unwrap();
+        assert_eq!(transaction, block.txdata[0]);
+    }
+
+    #[test]
+    fn test_has() {
+        init_logger();
+        let tmpdir = TempDir::new().unwrap();
+        let mut store = BlockStore::new(BlockStoreOptions::new(Network::Bitcoin, tmpdir.path()));
+        let block = genesis_block(Network::Bitcoin);
+        store.write_block(block.block_hash(), &block).unwrap();
+        assert!(store.has(block.block_hash()).unwrap());
+
+        let mut block = block;
+        block.header.nonce += 1;
+        assert!(!store.has(block.block_hash()).unwrap());
+    }
+
+    #[test]
+    fn test_read_raw_block() {
+        init_logger();
+        let tmpdir = TempDir::new().unwrap();
+        let mut store = BlockStore::new(BlockStoreOptions::new(Network::Bitcoin, tmpdir.path()));
+        let block = genesis_block(Network::Bitcoin);
+        store.write_block(block.block_hash(), &block).unwrap();
+        let block_bytes = store.read_raw_block(block.block_hash()).unwrap().unwrap();
+        assert_eq!(block_bytes, serialize(&block));
     }
 }
