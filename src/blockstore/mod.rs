@@ -460,6 +460,14 @@ mod test {
             .try_init();
     }
 
+    fn default_setup() -> (TempDir, BlockStore, Block) {
+        init_logger();
+        let tmpdir = TempDir::new().unwrap();
+        let store = BlockStore::new(BlockStoreOptions::new(Network::Bitcoin, tmpdir.path()));
+        let block = genesis_block(Network::Bitcoin);
+        (tmpdir, store, block)
+    }
+
     #[test]
     fn test_reindex() {
         init_logger();
@@ -487,10 +495,7 @@ mod test {
 
     #[test]
     fn test_prune_block() {
-        init_logger();
-        let tmpdir = TempDir::new().unwrap();
-        let mut store = BlockStore::new(BlockStoreOptions::new(Network::Bitcoin, tmpdir.path()));
-        let block = genesis_block(Network::Bitcoin);
+        let (tmpdir, mut store, block) = default_setup();
         store.write_block(block.block_hash(), &block).unwrap();
         assert!(store.has(block.block_hash()).unwrap());
         assert!(tmpdir.path().join("blk00000.dat").exists());
@@ -501,10 +506,7 @@ mod test {
 
     #[test]
     fn test_prune_multiple_blocks() {
-        init_logger();
-        let tmpdir = TempDir::new().unwrap();
-        let mut store = BlockStore::new(BlockStoreOptions::new(Network::Bitcoin, tmpdir.path()));
-        let first_block = genesis_block(Network::Bitcoin);
+        let (tmpdir, mut store, first_block) = default_setup();
         let second_block = {
             let mut block = first_block.clone();
             block.header.nonce += 1;
@@ -535,11 +537,8 @@ mod test {
 
     #[test]
     fn test_prune_non_existent_block() {
-        init_logger();
-        let tmpdir = TempDir::new().unwrap();
-        let mut store = BlockStore::new(BlockStoreOptions::new(Network::Bitcoin, tmpdir.path()));
-        let hash = genesis_block(Network::Bitcoin).block_hash();
-        assert!(!store.prune(hash).unwrap());
+        let (_tmpdir, mut store, block) = default_setup();
+        assert!(!store.prune(block.block_hash()).unwrap());
     }
 
     #[test]
@@ -605,10 +604,7 @@ mod test {
     #[test]
     #[should_panic(expected = "Out of bounds read: offset > block length")]
     fn test_out_of_bounds_offset() {
-        init_logger();
-        let tmpdir = TempDir::new().unwrap();
-        let mut store = BlockStore::new(BlockStoreOptions::new(Network::Bitcoin, tmpdir.path()));
-        let block = genesis_block(Network::Bitcoin);
+        let (_tmpdir, mut store, block) = default_setup();
         let block_size = block.get_size() as u32;
         store.write_block(block.block_hash(), &block).unwrap();
         // read with offset past end of block
@@ -620,10 +616,7 @@ mod test {
     #[test]
     #[should_panic(expected = "Out of bounds read: end > block length")]
     fn test_out_of_bounds_length() {
-        init_logger();
-        let tmpdir = TempDir::new().unwrap();
-        let mut store = BlockStore::new(BlockStoreOptions::new(Network::Bitcoin, tmpdir.path()));
-        let block = genesis_block(Network::Bitcoin);
+        let (_tmpdir, mut store, block) = default_setup();
         // on disk block size (account for 8 bytes of meta)
         let block_size = block.get_size() as u32 + 8;
         store.write_block(block.block_hash(), &block).unwrap();
@@ -640,10 +633,7 @@ mod test {
 
     #[test]
     fn test_read_offset() {
-        init_logger();
-        let tmpdir = TempDir::new().unwrap();
-        let mut store = BlockStore::new(BlockStoreOptions::new(Network::Bitcoin, tmpdir.path()));
-        let block = genesis_block(Network::Bitcoin);
+        let (_tmpdir, mut store, block) = default_setup();
         store.write_block(block.block_hash(), &block).unwrap();
         // the coinbase transaction is after the header (80 bytes) and varint for num of transactions (1 byte for 1 tx)
         let coinbase_bytes = store
@@ -657,10 +647,7 @@ mod test {
 
     #[test]
     fn test_read_length() {
-        init_logger();
-        let tmpdir = TempDir::new().unwrap();
-        let mut store = BlockStore::new(BlockStoreOptions::new(Network::Bitcoin, tmpdir.path()));
-        let block = genesis_block(Network::Bitcoin);
+        let (_tmpdir, mut store, block) = default_setup();
         store.write_block(block.block_hash(), &block).unwrap();
         // the first 80 bytes of a block are the header
         let header_bytes = store
@@ -674,10 +661,7 @@ mod test {
 
     #[test]
     fn test_read_offset_and_length() {
-        init_logger();
-        let tmpdir = TempDir::new().unwrap();
-        let mut store = BlockStore::new(BlockStoreOptions::new(Network::Bitcoin, tmpdir.path()));
-        let block = genesis_block(Network::Bitcoin);
+        let (_tmpdir, mut store, block) = default_setup();
         store.write_block(block.block_hash(), &block).unwrap();
         // script starts at block header + num txs varint len + version + num inputs varint len + outpoint
         let script_start = 80 + 1 + 4 + 1 + 36;
@@ -702,10 +686,7 @@ mod test {
 
     #[test]
     fn test_read_transaction() {
-        init_logger();
-        let tmpdir = TempDir::new().unwrap();
-        let mut store = BlockStore::new(BlockStoreOptions::new(Network::Bitcoin, tmpdir.path()));
-        let block = genesis_block(Network::Bitcoin);
+        let (_tmpdir, mut store, block) = default_setup();
         store.write_block(block.block_hash(), &block).unwrap();
         let transaction = store
             .read_transaction(block.block_hash(), 81, block.txdata[0].get_size() as u32)
@@ -716,10 +697,7 @@ mod test {
 
     #[test]
     fn test_has() {
-        init_logger();
-        let tmpdir = TempDir::new().unwrap();
-        let mut store = BlockStore::new(BlockStoreOptions::new(Network::Bitcoin, tmpdir.path()));
-        let block = genesis_block(Network::Bitcoin);
+        let (_tmpdir, mut store, block) = default_setup();
         store.write_block(block.block_hash(), &block).unwrap();
         assert!(store.has(block.block_hash()).unwrap());
 
@@ -730,10 +708,7 @@ mod test {
 
     #[test]
     fn test_read_raw_block() {
-        init_logger();
-        let tmpdir = TempDir::new().unwrap();
-        let mut store = BlockStore::new(BlockStoreOptions::new(Network::Bitcoin, tmpdir.path()));
-        let block = genesis_block(Network::Bitcoin);
+        let (_tmpdir, mut store, block) = default_setup();
         store.write_block(block.block_hash(), &block).unwrap();
         let block_bytes = store.read_raw_block(block.block_hash()).unwrap().unwrap();
         assert_eq!(block_bytes, serialize(&block));
