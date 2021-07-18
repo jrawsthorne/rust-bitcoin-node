@@ -4,7 +4,7 @@ use crate::{
     ChainEntry,
 };
 use bitcoin::{
-    consensus::{deserialize, Decodable, Encodable},
+    consensus::{Decodable, Encodable},
     Block, Transaction, Txid, VarInt,
 };
 use parking_lot::RwLock;

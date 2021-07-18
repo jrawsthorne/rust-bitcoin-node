@@ -5,7 +5,6 @@ use rocksdb::{ColumnFamily, DBIterator, Direction, IteratorMode, Options, WriteB
 use std::marker::PhantomData;
 use std::path::Path;
 
-pub const KEY_TIP: [u8; 1] = [0];
 pub const KEY_CHAIN_STATE: [u8; 1] = [1];
 
 pub struct DiskDatabase {

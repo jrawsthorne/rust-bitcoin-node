@@ -6,7 +6,7 @@ use crate::error::DBError;
 pub use batch::Batch;
 use bitcoin::consensus::Decodable;
 pub use disk::DiskDatabase;
-pub use disk::{Iter, IterDirection, IterMode, KEY_CHAIN_STATE, KEY_TIP};
+pub use disk::{Iter, IterDirection, IterMode, KEY_CHAIN_STATE};
 pub use key::DBKey;
 
 pub trait Database {

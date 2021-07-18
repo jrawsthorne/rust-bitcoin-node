@@ -3,7 +3,7 @@ use crate::coins::CoinView;
 use crate::{
     error::{DBError, TransactionVerificationError},
     primitives::TransactionExt,
-    protocol::consensus::{LockFlags, ScriptFlags},
+    protocol::consensus::LockFlags,
     util::ms_since,
     ChainEntry, CoinEntry,
 };

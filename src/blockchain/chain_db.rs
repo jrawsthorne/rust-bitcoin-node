@@ -793,7 +793,7 @@ use key::*;
 
 mod key {
     use super::*;
-    use crate::db::{KEY_CHAIN_STATE, KEY_TIP};
+    use crate::db::KEY_CHAIN_STATE;
     use bitcoin::consensus::Encodable;
 
     pub const COL_ENTRY: &str = "E";
@@ -828,7 +828,6 @@ mod key {
         NextHash(BlockHash),
         NextHashes(BlockHash),
         ChainState,
-        Tip,
         ChainWork(Uint256, BlockHash),
     }
 
@@ -840,7 +839,7 @@ mod key {
                 Key::Hash(_) => COL_HASH,
                 Key::Height(_) => COL_HEIGHT,
                 Key::NextHash(_) => COL_NEXT_HASH,
-                Key::ChainState | Key::Tip => COL_MISC,
+                Key::ChainState => COL_MISC,
                 Key::ChainWork(_, _) => COL_CHAIN_WORK,
                 Key::NextHashes(_) => COL_NEXT_HASHES,
             }
@@ -859,10 +858,6 @@ mod key {
                 | Key::Height(hash)
                 | Key::NextHash(hash)
                 | Key::NextHashes(hash) => hash.consensus_encode(&mut e)?,
-                Key::Tip => {
-                    e.emit_slice(&KEY_TIP)?;
-                    1
-                }
                 Key::ChainState => {
                     e.emit_slice(&KEY_CHAIN_STATE)?;
                     1
