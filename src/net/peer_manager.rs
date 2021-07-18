@@ -78,6 +78,12 @@ impl From<Wtxid> for GenericTxid {
     }
 }
 
+impl From<GenericTxid> for Txid {
+    fn from(gtxid: GenericTxid) -> Txid {
+        gtxid.hash.into()
+    }
+}
+
 #[derive(Default)]
 pub struct State {
     pub peers: HashMap<SocketAddr, Arc<Peer>>,

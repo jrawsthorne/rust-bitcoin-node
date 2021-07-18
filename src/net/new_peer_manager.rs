@@ -13,7 +13,7 @@ use anyhow::{anyhow, bail, Result};
 use bitcoin::{
     hashes::sha256d,
     network::{message::NetworkMessage, message_blockdata::Inventory},
-    Block, BlockHash, BlockHeader, Transaction,
+    Block, BlockHash, BlockHeader, Transaction, Txid,
 };
 use log::{debug, info, trace, warn};
 use parking_lot::{Mutex, RwLock};
@@ -610,6 +610,15 @@ impl PeerManager {
         Ok(())
     }
 
+    fn mempool_has_tx(&self, gtxid: GenericTxid) -> bool {
+        if let Some(mempool) = &self.mempool {
+            let mempool = mempool.read();
+            mempool.transactions.contains_key::<Txid>(&gtxid.into())
+        } else {
+            false
+        }
+    }
+
     pub async fn handle_inv<'a>(&self, peer: PeerRef<'a>, items: Vec<Inventory>) -> Result<()> {
         if !self.chain.read().synced() {
             return Ok(());
@@ -631,6 +640,7 @@ impl PeerManager {
                 if let Some(gtxid) = gtxid {
                     if state.requested_transactions.contains(&gtxid)
                         || state.verifying.contains(&gtxid.hash)
+                        || self.mempool_has_tx(gtxid)
                     {
                         continue;
                     }
