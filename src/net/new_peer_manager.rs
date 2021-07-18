@@ -587,6 +587,10 @@ impl PeerManager {
                 TxRelay::Wtxid => tx.wtxid().into(),
             };
 
+            if self.mempool_has_tx(gtxid) {
+                return Ok(());
+            }
+
             if !peer_state.requested_transactions.remove(&gtxid) {
                 bail!("unrequested transaction");
             }
