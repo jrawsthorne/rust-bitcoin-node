@@ -30,8 +30,8 @@ pub const BIP34_IMPLIES_BIP30_LIMIT: u32 = 1_983_702;
 pub const MAX_SCRIPT_PUSH: usize = 520;
 
 bitflags::bitflags! {
+    #[derive(Default)]
     pub struct ScriptFlags: u32 {
-        const VERIFY_NONE = 0;
         const VERIFY_P2SH = 1 << 0;
         const VERIFY_STRICTENC = 1 << 1;
         const VERIFY_DERSIG = 1 << 2;
@@ -75,24 +75,12 @@ bitflags::bitflags! {
     }
 }
 
-impl Default for ScriptFlags {
-    fn default() -> Self {
-        Self::VERIFY_NONE
-    }
-}
-
 bitflags::bitflags! {
+    #[derive(Default)]
     pub struct LockFlags: u32 {
-        const NONE = 0;
         const VERIFY_SEQUENCE = 1 << 0;
         const MEDIAN_TIME_PAST = 1 << 1;
         const STANDARD_LOCKTIME_FLAGS = Self::VERIFY_SEQUENCE.bits() | Self::MEDIAN_TIME_PAST.bits();
-    }
-}
-
-impl Default for LockFlags {
-    fn default() -> Self {
-        Self::NONE
     }
 }
 
@@ -161,8 +149,9 @@ mod test {
     }
 
     fn interval_params(interval: u32) -> NetworkParams {
-        let mut params = NetworkParams::default();
-        params.halving_interval = interval;
-        params
+        NetworkParams {
+            halving_interval: interval,
+            ..Default::default()
+        }
     }
 }

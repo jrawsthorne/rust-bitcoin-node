@@ -682,7 +682,7 @@ impl PeerManager {
             state.block_map.insert(hash);
         }
 
-        if self.chain.write().add_header(&header).is_err() {
+        if self.chain.write().add_header(header).is_err() {
             debug!("Peer sent an invalid compact block ({}).", peer.addr);
             bail!("invalid compact block");
         }
@@ -780,10 +780,8 @@ impl PeerManager {
                 if state.header_sync_peer.is_none() {
                     state.header_sync_peer = Some(peer.clone());
                     true
-                } else if chain.synced() {
-                    true
                 } else {
-                    false
+                    chain.synced()
                 }
             };
 

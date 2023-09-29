@@ -53,7 +53,7 @@ impl BlockStore {
             .unwrap()
         {
             let hash = &hash[4..];
-            let hash = deserialize(&hash).unwrap();
+            let hash = deserialize(hash).unwrap();
             downloaded.insert(hash);
         }
         downloaded
@@ -98,9 +98,10 @@ impl BlockStore {
         let mut missing = false;
 
         for fileno in &filenos {
-            if let None = self
+            if self
                 .db
                 .get::<_, FileRecord>(Key::File(record_type, *fileno))?
+                .is_none()
             {
                 missing = true;
                 break;
@@ -170,7 +171,7 @@ impl BlockStore {
             let file_record = FileRecord::new(
                 blocks,
                 reader.position() as u32,
-                self.options.max_file_length as u32,
+                self.options.max_file_length,
             );
 
             batch.insert(Key::File(record_type, fileno), &file_record);
@@ -232,7 +233,7 @@ impl BlockStore {
             Some(file_record) => file_record,
             None => {
                 touch = true;
-                FileRecord::empty(self.options.max_file_length as u32)
+                FileRecord::empty(self.options.max_file_length)
             }
         };
 
@@ -240,7 +241,7 @@ impl BlockStore {
             fileno += 1;
             filepath = self.filepath(record_type, fileno);
             touch = true;
-            filerecord = FileRecord::empty(self.options.max_file_length as u32);
+            filerecord = FileRecord::empty(self.options.max_file_length);
         }
 
         if touch {

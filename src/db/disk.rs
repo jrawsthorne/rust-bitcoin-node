@@ -21,9 +21,10 @@ impl<'a, V: Decodable> Iterator for Iter<'a, V> {
     type Item = (Box<[u8]>, V);
     fn next(&mut self) -> Option<Self::Item> {
         if let Some(next) = self.iter.next() {
-            let value = V::consensus_decode(&next.1[..]);
+            let (key, value) = next.expect("TODO: handle iterator error");
+            let value = V::consensus_decode(&value[..]);
             if let Ok(value) = value {
-                return Some((next.0, value));
+                return Some((key, value));
             }
         }
         None
@@ -53,15 +54,14 @@ impl DiskDatabase {
         // Collect any existing columns that are no longer used
         let mut cfs_to_drop = vec![];
 
-        match DB::list_cf(&db_options, &path) {
-            Ok(cfs) => {
-                for cf in cfs {
-                    if cf != "default" && !columns_to_open.contains(&cf) {
-                        cfs_to_drop.push(cf);
-                    }
+        if let Ok(cfs) = DB::list_cf(&db_options, &path) {
+            for cf in cfs {
+                if cf != "default" && !columns_to_open.contains(&cf) {
+                    cfs_to_drop.push(cf);
                 }
             }
-            Err(_) => {} // no existing db
+        } else {
+            // no existing db
         }
 
         // Extend the list of columns to open with old columns

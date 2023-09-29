@@ -1,6 +1,7 @@
 use super::DBKey;
 use bitcoin::consensus::{serialize, Encodable};
 
+#[derive(Default)]
 pub struct Batch<K: DBKey> {
     pub operations: Vec<Operation<K>>,
 }

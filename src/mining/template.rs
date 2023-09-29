@@ -21,8 +21,10 @@ impl BlockTemplate {
         time: u32,
         target: u32,
     ) -> Self {
-        let mut network_params = NetworkParams::default();
-        network_params.network = bitcoin::Network::Regtest;
+        let network_params = NetworkParams {
+            network: bitcoin::Network::Regtest,
+            ..Default::default()
+        };
         Self {
             height,
             address,
@@ -43,11 +45,14 @@ impl BlockTemplate {
             output: vec![],
         };
 
-        let mut input = TxIn::default();
-        input.script_sig = script::Builder::new()
-            .push_int(self.height as i64)
-            .push_slice(&[0]) // cb script sig padding (2 <= len <= 100)
-            .into_script();
+        let input = TxIn {
+            script_sig: script::Builder::new()
+                .push_int(self.height as i64)
+                .push_slice(&[0]) // cb script sig padding (2 <= len <= 100)
+                .into_script(),
+            ..Default::default()
+        };
+
         coinbase.input.push(input);
 
         let output = TxOut {

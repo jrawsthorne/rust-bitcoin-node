@@ -20,6 +20,7 @@ use bitcoin::{
 };
 use log::{error, info, warn};
 use rayon::prelude::*;
+use std::cmp::Ordering;
 use std::collections::VecDeque;
 use std::{path::PathBuf, time::Instant};
 
@@ -253,10 +254,8 @@ impl Chain {
             entry.skip = skip;
         }
 
-        if let Err(err) = self.contextual_check_block_header(header, &prev) {
-            // TODO: check for mutation and set invalid if not mutated
-            return Err(err);
-        };
+        // TODO: check for mutation and set invalid if not mutated
+        self.contextual_check_block_header(header, &prev)?;
 
         self.db.save_entry(entry, &prev).unwrap();
 
@@ -459,10 +458,10 @@ impl Chain {
         mut a: &'a ChainEntry,
         mut b: &'a ChainEntry,
     ) -> Option<&ChainEntry> {
-        if a.height > b.height {
-            a = self.db.get_ancestor(a, b.height);
-        } else if b.height > a.height {
-            b = self.db.get_ancestor(b, a.height);
+        match a.height.cmp(&b.height) {
+            Ordering::Greater => a = self.db.get_ancestor(a, b.height),
+            Ordering::Less => b = self.db.get_ancestor(b, a.height),
+            _ => {}
         }
 
         let mut a = Some(a);
@@ -527,7 +526,7 @@ impl Chain {
                     .hash;
             } else {
                 let ancestor = self.db.get_ancestor(&start_entry, height);
-                in_best_chain = self.db.is_main_chain(&ancestor);
+                in_best_chain = self.db.is_main_chain(ancestor);
                 hash = ancestor.hash;
             }
 
@@ -615,7 +614,7 @@ impl Chain {
         let state = self.get_deployments(block.header.time, prev);
 
         // non contextual verification;
-        self.verify(&block, prev)?;
+        self.verify(block, prev)?;
 
         // verify duplicate txids
         if !state.has_bip34() || prev.height + 1 >= consensus::BIP34_IMPLIES_BIP30_LIMIT {
@@ -675,7 +674,7 @@ impl Chain {
                 let fee = tx.check_inputs(&view, height)?;
                 reward = reward
                     .checked_add(fee)
-                    .ok_or_else(|| TransactionVerificationError::InputValuesOutOfRange)?;
+                    .ok_or(TransactionVerificationError::InputValuesOutOfRange)?;
                 if reward > consensus::MAX_MONEY {
                     return Err(TransactionVerificationError::FeeOutOfRange)?;
                 }
@@ -820,7 +819,7 @@ impl Chain {
 
         let first = self.db.get_ancestor(prev, height);
 
-        self.retarget(prev, &first)
+        self.retarget(prev, first)
     }
 
     fn retarget(&self, prev: &ChainEntry, first: &ChainEntry) -> u32 {
@@ -1051,10 +1050,10 @@ impl Chain {
         view: &CoinView,
         flags: &LockFlags,
     ) -> Result<(), TransactionVerificationError> {
-        let (height, time) = self.get_locks(&prev, tx, view, flags);
+        let (height, time) = self.get_locks(prev, tx, view, flags);
 
         if let Some(height) = height {
-            if height >= prev.height + 1 {
+            if height > prev.height {
                 return Err(TransactionVerificationError::NonFinal);
             }
         }
@@ -1108,7 +1107,7 @@ impl Chain {
                 continue;
             }
 
-            height = height.checked_sub(1).unwrap_or(0);
+            height = height.saturating_sub(1);
 
             let entry = self.db.get_ancestor(prev, height);
 
