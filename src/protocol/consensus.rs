@@ -30,7 +30,7 @@ pub const BIP34_IMPLIES_BIP30_LIMIT: u32 = 1_983_702;
 pub const MAX_SCRIPT_PUSH: usize = 520;
 
 bitflags::bitflags! {
-    #[derive(Default)]
+    #[derive(Debug, Default, Clone, Copy)]
     pub struct ScriptFlags: u32 {
         const VERIFY_P2SH = 1 << 0;
         const VERIFY_STRICTENC = 1 << 1;
@@ -76,7 +76,7 @@ bitflags::bitflags! {
 }
 
 bitflags::bitflags! {
-    #[derive(Default)]
+    #[derive(Debug, Default, Clone, Copy)]
     pub struct LockFlags: u32 {
         const VERIFY_SEQUENCE = 1 << 0;
         const MEDIAN_TIME_PAST = 1 << 1;

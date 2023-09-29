@@ -8,23 +8,26 @@ edition = "2018"
 test-utils = []
 
 [dependencies]
-bitcoin = { git="https://github.com/jrawsthorne/rust-bitcoin", branch = "master", features=["bitcoinconsensus", "rand"] }
-log = "0.4"
-env_logger = "0.8"
-bytes = "1.0.1"
-rocksdb = "0.21"
-bitcoinconsensus = { git="https://github.com/jrawsthorne/rust-bitcoinconsensus", branch="0.21" }
-regex = "1"
-bitflags = "1"
+bitcoin = { git = "https://github.com/jrawsthorne/rust-bitcoin", branch = "master", features = [
+    "bitcoinconsensus",
+    "rand",
+] }
+log = "0.4.20"
+env_logger = "0.10.0"
+bytes = "1.5.0"
+rocksdb = "0.21.0"
+bitcoinconsensus = { git = "https://github.com/jrawsthorne/rust-bitcoinconsensus", branch = "0.21" }
+regex = "1.9.5"
+bitflags = "2.4.0"
 maplit = "1.0.2"
-parking_lot = "0.11"
-rayon = "1.5"
-thiserror = "1.0"
-murmur3 = "0.5.1"
-crossbeam-channel = "0.5"
-anyhow = "1.0"
-rand = "0.8"
-tokio = { version = "1", features = ["full"] }
+parking_lot = "0.12.1"
+rayon = "1.8.0"
+thiserror = "1.0.49"
+murmur3 = "0.5.2"
+crossbeam-channel = "0.5.8"
+anyhow = "1.0.75"
+rand = "0.8.5"
+tokio = { version = "1.32.0", features = ["full"] }
 
 [dev-dependencies]
-tempfile = "3"
+tempfile = "3.8.0"
