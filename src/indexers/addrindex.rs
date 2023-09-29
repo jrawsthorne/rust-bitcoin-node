@@ -117,7 +117,7 @@ impl AddrIndexer {
             if !tx.is_coin_base() {
                 for input in &tx.input {
                     let previous_output = &view.map[&input.previous_output].output.script_pubkey;
-                    if let Some(addr) = Address::from_script(&previous_output, self.network) {
+                    if let Some(addr) = Address::from_script(previous_output, self.network) {
                         if addr.is_standard() {
                             has_address = true;
                             batch.insert(Key::AddrMap(addr, entry.height, index as u32), DUMMY);
@@ -151,7 +151,7 @@ impl AddrIndexer {
                 for input in &tx.input {
                     let previous_output = &view.map[&input.previous_output].output.script_pubkey;
 
-                    if let Some(addr) = Address::from_script(&previous_output, self.network) {
+                    if let Some(addr) = Address::from_script(previous_output, self.network) {
                         has_address = true;
                         if addr.is_standard() {
                             batch.remove(Key::AddrMap(addr, entry.height, index as u32));

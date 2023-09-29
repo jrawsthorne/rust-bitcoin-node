@@ -29,10 +29,7 @@ impl DBKey for Key {
 }
 
 impl Encodable for Key {
-    fn consensus_encode<W: std::io::Write>(
-        &self,
-        mut e: W,
-    ) -> Result<usize, io::Error> {
+    fn consensus_encode<W: std::io::Write>(&self, mut e: W) -> Result<usize, io::Error> {
         Ok(match self {
             Key::BlockRecord(record_type, hash) => {
                 record_type.as_u32().consensus_encode(&mut e)? + hash.consensus_encode(&mut e)?

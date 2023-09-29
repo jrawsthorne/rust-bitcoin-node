@@ -244,7 +244,7 @@ impl TransactionExt for Transaction {
             }
             value_out = value_out
                 .checked_add(output.value)
-                .ok_or_else(|| OutputTotalTooLarge)?;
+                .ok_or(OutputTotalTooLarge)?;
             if value_out > MAX_MONEY {
                 return Err(OutputTotalTooLarge);
             }
@@ -264,7 +264,7 @@ impl TransactionExt for Transaction {
 
         if self.is_coin_base() {
             let script_sig_len = self.input[0].script_sig.len();
-            if script_sig_len < 2 || script_sig_len > 100 {
+            if !(2..=100).contains(&script_sig_len) {
                 return Err(BadCoinbaseLength);
             }
         } else {

@@ -185,7 +185,7 @@ impl PeerManager {
 
         {
             let chain = self.chain.read();
-            if !chain.is_recent() && !state.is_header_sync_peer(&peer) {
+            if !chain.is_recent() && !state.is_header_sync_peer(peer) {
                 return false;
             }
         }
@@ -285,7 +285,7 @@ impl PeerManager {
                 .expect("common hash so must have that hash");
 
             walker = chain
-                .common_ancestor(&walker, &best)
+                .common_ancestor(walker, &best)
                 .expect("have block in common so must be an ancestor");
 
             peer_state.common_hash = Some(walker.hash);
@@ -507,7 +507,7 @@ impl PeerManager {
                     continue;
                 }
 
-                let entry = match chain.add_header(&header) {
+                let entry = match chain.add_header(header) {
                     Ok((entry, _prev)) => entry,
                     Err(_err) => {
                         bail!("bad header");
@@ -732,12 +732,10 @@ async fn connect_to_peer(addr: SocketAddr, peer_manager: Arc<PeerManager>) {
                     error, addr
                 );
                 peer_manager.state.lock().peers.remove(&addr);
-                return;
             }
             Err(_) => {
                 warn!("error during handshake, disconnecting: timeout ({})", addr);
                 peer_manager.state.lock().peers.remove(&addr);
-                return;
             }
             _ => {
                 peer_manager.handshake_complete(&peer);
@@ -830,7 +828,7 @@ async fn disconnect_stalling_peers(peer_manager: Arc<PeerManager>) {
             let now = util::now();
 
             if peer_state.syncing
-                && peer_state.requested_blocks.len() > 0
+                && !peer_state.requested_blocks.is_empty()
                 && matches!(peer_state.block_time, Some(block_time) if now > block_time + 120)
             {
                 drop(peer_state);
@@ -939,7 +937,7 @@ mod test {
                 }
             }
 
-            yield_now().await;
+            let _ = yield_now().await;
         }
 
         loop {
@@ -951,7 +949,7 @@ mod test {
                 }
             }
 
-            yield_now().await;
+            let _ = yield_now().await;
         }
     }
 }

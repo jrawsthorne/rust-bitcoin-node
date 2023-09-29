@@ -46,6 +46,7 @@ pub struct BloomFilter {
 impl BloomFilter {
     const MAX_BLOOM_FILTER_SIZE: usize = 36_000;
     const MAX_HASH_FUNCS: u32 = 50;
+    #[allow(clippy::excessive_precision)]
     const LN2SQUARED: f64 = 0.4804530139182014246671025263266649717305529515945455;
 
     // https://github.com/bitcoin/bitcoin/blob/910f0468a1f7eaf6160d9a24359615e9959e4d93/src/bloom.cpp#L22
@@ -53,7 +54,7 @@ impl BloomFilter {
         let data = vec![
             0;
             std::cmp::min(
-                (-1 as f64 / Self::LN2SQUARED * (elements as f64) * rate.ln()) as usize,
+                (-1_f64 / Self::LN2SQUARED * (elements as f64) * rate.ln()) as usize,
                 Self::MAX_BLOOM_FILTER_SIZE * 8,
             ) / 8
         ];
@@ -70,13 +71,13 @@ impl BloomFilter {
         }
     }
 
-    fn hash(&self, hash_num: u32, data_to_hash: &[u8]) -> usize {
+    fn hash(&self, hash_num: u32, mut data_to_hash: &[u8]) -> usize {
         let seed = hash_num
             .overflowing_mul(0xFBA4C795)
             .0
             .overflowing_add(self.tweak)
             .0;
-        murmur3_32(&mut data_to_hash.as_ref(), seed).unwrap() as usize % (self.data.len() * 8)
+        murmur3_32(&mut data_to_hash, seed).unwrap() as usize % (self.data.len() * 8)
     }
 
     pub fn is_within_size_constraints(&self) -> bool {
@@ -187,14 +188,11 @@ impl BloomFilter {
             if self.contains_outpoint(&input.previous_output) {
                 return true;
             }
-            for instruction in input.script_sig.instructions() {
-                match instruction {
-                    Ok(Instruction::PushBytes(data)) => {
-                        if !data.is_empty() && self.contains(data) {
-                            return true;
-                        }
+            for instruction in input.script_sig.instructions().flatten() {
+                if let Instruction::PushBytes(data) = instruction {
+                    if !data.is_empty() && self.contains(data) {
+                        return true;
                     }
-                    _ => {}
                 }
             }
         }
@@ -369,7 +367,7 @@ mod test {
                 }
             })
             .collect();
-        let merkle_block = MerkleBlock::from_block(&block, &match_txids);
+        let merkle_block = MerkleBlock::from_block(block, &match_txids);
         (merkle_block, matched_txn)
     }
 

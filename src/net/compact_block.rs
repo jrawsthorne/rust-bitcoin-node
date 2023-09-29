@@ -56,7 +56,7 @@ impl CompactBlock {
 
         Some(Self {
             total_tx,
-            header: header,
+            header,
             sip_key: ShortId::calculate_siphash_keys(&header, nonce),
             available,
             count,

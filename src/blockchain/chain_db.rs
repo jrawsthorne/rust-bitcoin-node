@@ -117,7 +117,7 @@ impl ChainDB {
         info!("Populating downloaded blocks cache");
         let downloaded = blocks.downloaded_set();
 
-        let db = Self {
+        Self {
             blocks,
             version_bits_cache: VersionBitsCache::new(&network_params),
             network_params,
@@ -128,9 +128,7 @@ impl ChainDB {
             invalid: Default::default(),
             most_work: Default::default(),
             downloaded,
-        };
-
-        db
+        }
     }
 
     pub fn open(&mut self) -> Result<(), DBError> {
@@ -322,7 +320,7 @@ impl ChainDB {
                     continue;
                 }
 
-                pending.spend(&output);
+                pending.spend(output);
             }
         }
 
@@ -394,7 +392,7 @@ impl ChainDB {
         let start = height + limit as u32;
 
         if start < entry.height {
-            entry = self.get_ancestor(&entry, start);
+            entry = self.get_ancestor(entry, start);
         }
 
         while entry.height > height {
@@ -780,12 +778,16 @@ impl VersionBitsCache {
 pub struct VersionBitsCacheUpdate {
     bit: u8,
     hash: BlockHash,
-    state: ThresholdState,
+    _state: ThresholdState,
 }
 
 impl VersionBitsCacheUpdate {
     pub fn new(bit: u8, hash: BlockHash, state: ThresholdState) -> Self {
-        Self { bit, hash, state }
+        Self {
+            bit,
+            hash,
+            _state: state,
+        }
     }
 }
 
