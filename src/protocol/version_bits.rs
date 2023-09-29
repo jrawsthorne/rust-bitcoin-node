@@ -92,17 +92,11 @@ impl Deployment {
     }
 
     pub fn always_active(&self) -> bool {
-        match &self.start_time {
-            StartTime::AlwaysActive => true,
-            _ => false,
-        }
+        matches!(&self.start_time, StartTime::AlwaysActive)
     }
 
     pub fn no_timeout(&self) -> bool {
-        match self.timeout {
-            Timeout::NoTimeout => true,
-            _ => false,
-        }
+        matches!(&self.timeout, Timeout::NoTimeout)
     }
 }
 

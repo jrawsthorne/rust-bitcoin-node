@@ -2,7 +2,7 @@ use std::io;
 
 use bitcoin::consensus::{encode, Decodable, Encodable};
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct FileRecord {
     pub blocks: u32,
     pub used: u32,
@@ -27,31 +27,11 @@ impl FileRecord {
     }
 }
 
-impl Default for FileRecord {
-    fn default() -> Self {
-        Self {
-            blocks: 0,
-            used: 0,
-            length: 0,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct BlockRecord {
     pub file: u32,
     pub position: u32,
     pub length: u32,
-}
-
-impl Default for BlockRecord {
-    fn default() -> Self {
-        Self {
-            file: 0,
-            position: 0,
-            length: 0,
-        }
-    }
 }
 
 impl BlockRecord {

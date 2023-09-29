@@ -53,15 +53,14 @@ impl DiskDatabase {
         // Collect any existing columns that are no longer used
         let mut cfs_to_drop = vec![];
 
-        match DB::list_cf(&db_options, &path) {
-            Ok(cfs) => {
-                for cf in cfs {
-                    if cf != "default" && !columns_to_open.contains(&cf) {
-                        cfs_to_drop.push(cf);
-                    }
+        if let Ok(cfs) = DB::list_cf(&db_options, &path) {
+            for cf in cfs {
+                if cf != "default" && !columns_to_open.contains(&cf) {
+                    cfs_to_drop.push(cf);
                 }
             }
-            Err(_) => {} // no existing db
+        } else {
+            // no existing db
         }
 
         // Extend the list of columns to open with old columns

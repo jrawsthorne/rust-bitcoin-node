@@ -46,7 +46,7 @@ impl CoinView {
     }
 
     pub fn get_output(&self, prevout: &OutPoint) -> Option<&TxOut> {
-        self.map.get(prevout).and_then(|coin| Some(&coin.output))
+        self.map.get(prevout).map(|coin| &coin.output)
     }
 
     pub fn get_entry(&self, prevout: &OutPoint) -> Option<&CoinEntry> {
@@ -63,7 +63,7 @@ impl CoinView {
             Entry::Occupied(entry) => Some(entry.into_mut()),
             Entry::Vacant(entry) => db
                 .read_coin(prevout)?
-                .and_then(|coin| Some(entry.insert(coin.clone()))),
+                .map(|coin| entry.insert(coin.clone())),
         })
     }
 
