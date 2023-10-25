@@ -233,7 +233,7 @@ impl Peer {
         debug!("Sending getheaders (hash={}, stop={:?}).", locator[0], stop);
         self.queue_message(NetworkMessage::GetHeaders(GetHeadersMessage::new(
             locator,
-            stop.unwrap_or(BlockHash::default()),
+            stop.unwrap_or_default(),
         )));
     }
 
