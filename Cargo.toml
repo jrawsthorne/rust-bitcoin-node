@@ -17,7 +17,7 @@ env_logger = "0.10.0"
 bytes = "1.5.0"
 rocksdb = "0.21.0"
 bitcoinconsensus = { git = "https://github.com/jrawsthorne/rust-bitcoinconsensus", branch = "0.21" }
-regex = "1.9.6"
+regex = "1.10.2"
 bitflags = "2.4.1"
 maplit = "1.0.2"
 parking_lot = "0.12.1"
