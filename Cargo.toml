@@ -13,7 +13,7 @@ bitcoin = { git = "https://github.com/jrawsthorne/rust-bitcoin", branch = "maste
     "rand",
 ] }
 log = "0.4.20"
-env_logger = "0.10.0"
+env_logger = "0.10.1"
 bytes = "1.5.0"
 rocksdb = "0.21.0"
 bitcoinconsensus = { git = "https://github.com/jrawsthorne/rust-bitcoinconsensus", branch = "0.21" }
