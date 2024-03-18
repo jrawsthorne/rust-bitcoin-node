@@ -25,7 +25,7 @@ rayon = "1.8.0"
 thiserror = "1.0.53"
 murmur3 = "0.5.2"
 crossbeam-channel = "0.5.10"
-anyhow = "1.0.78"
+anyhow = "1.0.81"
 rand = "0.8.5"
 tokio = { version = "1.35.1", features = ["full"] }
 
